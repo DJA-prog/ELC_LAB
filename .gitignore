@@ -1,0 +1,11 @@
+*.csv
+*.xlsx
+*.xls
+*.xlsm
+*.db
+DOCS/*
+__pycache__/
+*.pyc
+.venv/
+venv/
+.~lock*
