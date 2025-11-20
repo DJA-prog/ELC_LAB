@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QMessageBox, QHeaderView, QSplitter, QGroupBox,
                            QFormLayout, QDoubleSpinBox, QListWidget, QListWidgetItem,
                            QCheckBox, QSpacerItem, QSizePolicy, QFileDialog, QMenu, QInputDialog, QDialog,
-                           QCompleter, QAbstractItemView, QSpinBox)
+                           QCompleter, QAbstractItemView, QSpinBox, QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, pyqtSignal, QSortFilterProxyModel, QStringListModel
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import QAction
@@ -180,9 +180,6 @@ class DatabaseManager:
         
         # Initialize standard categories
         self.initialize_standard_categories()
-        
-        # Auto-categorize existing components
-        self.auto_categorize_all_components()
     
     def initialize_standard_categories(self):
         """Initialize the 6 standard categories"""
@@ -210,45 +207,18 @@ class DatabaseManager:
                     INSERT INTO categories (name, description)
                     VALUES (?, ?)
                 ''', (name, description))
-        else:
-            # Clear existing categories and insert standard ones
-            cursor.execute("DELETE FROM component_category")  # Clear links first
-            cursor.execute("DELETE FROM categories")  # Clear categories
+        # elif count != 6:
+        #     # Wrong number of categories, reset them
+        #     cursor.execute("DELETE FROM component_category")  # Clear links first
+        #     cursor.execute("DELETE FROM categories")  # Clear categories
             
-            # Insert standard categories
-            for name, description in standard_categories:
-                cursor.execute('''
-                    INSERT INTO categories (name, description)
-                    VALUES (?, ?)
-                ''', (name, description))
-        
-        conn.commit()
-        conn.close()
-    
-    def auto_categorize_all_components(self):
-        """Auto-categorize all existing components using the categorization logic"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # Get all components
-        cursor.execute("SELECT id, identifier, description FROM components")
-        components = cursor.fetchall()
-        
-        # Get category IDs for quick lookup
-        cursor.execute("SELECT id, name FROM categories")
-        category_map = {name: id for id, name in cursor.fetchall()}
-        
-        # Clear existing component-category links
-        cursor.execute("DELETE FROM component_category")
-        
-        # Categorize each component
-        for component_id, identifier, description in components:
-            category = self.categorize_component(identifier or '', description or '')
-            if category in category_map:
-                cursor.execute('''
-                    INSERT INTO component_category (component_id, category_id)
-                    VALUES (?, ?)
-                ''', (component_id, category_map[category]))
+        #     # Insert standard categories
+        #     for name, description in standard_categories:
+        #         cursor.execute('''
+        #             INSERT INTO categories (name, description)
+        #             VALUES (?, ?)
+        #         ''', (name, description))
+        # # If count == 6, assume categories are correct and don't touch them
         
         conn.commit()
         conn.close()
@@ -294,6 +264,24 @@ class DatabaseManager:
         if any(keyword in code_upper or keyword in desc_upper for keyword in ['TRANSISTOR', 'FET', 'IRF']) or code_upper.startswith('T_'):
             return 'TRANSISTORS'
             
+        return 'OTHER COMPONENTS'
+    
+    def get_component_category(self, component_id, component_code=None, component_desc=None):
+        """Get component category from database first, fallback to dynamic categorization"""
+        # First check if component has manually assigned category in database
+        assigned_categories = self.get_component_categories(component_id)
+        if assigned_categories:
+            return assigned_categories[0][1]  # Return the category name
+        
+        # Fallback to dynamic categorization if no manual assignment
+        if component_code is not None:
+            return self.categorize_component(component_code, component_desc)
+        
+        # If we only have component_id, get the component details first
+        component = self.get_component_by_id(component_id)
+        if component:
+            return self.categorize_component(component[1], component[2])
+        
         return 'OTHER COMPONENTS'
     
     def get_connection(self):
@@ -2987,7 +2975,9 @@ class CategoryWidget(QWidget):
         
         try:
             self.db_manager.insert_category(name, description)
-            QMessageBox.information(self, "Success", "Category added successfully!")
+            # Show success popup only if enabled in settings
+            if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                QMessageBox.information(self, "Success", "Category added successfully!")
             self.clear_form()
             self.refresh_categories()
             self.categoryAdded.emit()
@@ -3007,7 +2997,9 @@ class CategoryWidget(QWidget):
         
         try:
             self.db_manager.update_category(self.selected_category_id, name, description)
-            QMessageBox.information(self, "Success", "Category updated successfully!")
+            # Show success popup only if enabled in settings
+            if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                QMessageBox.information(self, "Success", "Category updated successfully!")
             self.clear_form()
             self.refresh_categories()
             self.categoryUpdated.emit()
@@ -3025,7 +3017,9 @@ class CategoryWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.delete_category(self.selected_category_id)
-                QMessageBox.information(self, "Success", "Category deleted successfully!")
+                # Show success popup only if enabled in settings
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Category deleted successfully!")
                 self.clear_form()
                 self.refresh_categories()
                 self.categoryUpdated.emit()
@@ -3127,7 +3121,7 @@ class LinkingWidget(QWidget):
         splitter.addWidget(components_widget)
         
         # Right side - Categories for selected component
-        categories_widget = QGroupBox("Manage Categories for Selected Component")
+        categories_widget = QGroupBox("Select Category for Selected Component")
         categories_layout = QVBoxLayout(categories_widget)
         
         # Info label
@@ -3135,34 +3129,32 @@ class LinkingWidget(QWidget):
         self.selected_component_label.setFont(QFont("Arial", 10, QFont.Bold))
         categories_layout.addWidget(self.selected_component_label)
         
-        # Available categories list
-        available_label = QLabel("Available Categories:")
-        self.available_categories = QListWidget()
-        self.available_categories.setMaximumHeight(150)
+        # Category selection with radio buttons
+        category_selection_label = QLabel("Choose Category:")
+        categories_layout.addWidget(category_selection_label)
         
-        # Assigned categories list
-        assigned_label = QLabel("Assigned Categories:")
-        self.assigned_categories = QListWidget()
-        self.assigned_categories.setMaximumHeight(150)
+        # Radio button group for categories
+        self.category_button_group = QButtonGroup()
+        self.category_radio_buttons = {}
         
-        # Buttons for managing categories
-        button_layout = QHBoxLayout()
-        self.assign_button = QPushButton("Assign →")
-        self.remove_button = QPushButton("← Remove")
+        # Create radio buttons for each category
+        categories = ['RESISTOR', 'CAPACITOR', 'DIODE', 'IC', 'TRANSISTORS', 'OTHER COMPONENTS']
+        for i, category in enumerate(categories):
+            radio_button = QRadioButton(category)
+            radio_button.clicked.connect(self.on_category_selected)
+            self.category_button_group.addButton(radio_button, i)
+            self.category_radio_buttons[category] = radio_button
+            categories_layout.addWidget(radio_button)
+            
+            # Set "OTHER COMPONENTS" as default
+            if category == 'OTHER COMPONENTS':
+                radio_button.setChecked(True)
         
-        self.assign_button.clicked.connect(self.assign_category)
-        self.remove_button.clicked.connect(self.remove_category)
-        self.assign_button.setEnabled(False)
-        self.remove_button.setEnabled(False)
-        
-        button_layout.addWidget(self.assign_button)
-        button_layout.addWidget(self.remove_button)
-        
-        categories_layout.addWidget(available_label)
-        categories_layout.addWidget(self.available_categories)
-        categories_layout.addLayout(button_layout)
-        categories_layout.addWidget(assigned_label)
-        categories_layout.addWidget(self.assigned_categories)
+        # Apply button
+        self.apply_category_btn = QPushButton("Apply Category")
+        self.apply_category_btn.clicked.connect(self.apply_selected_category)
+        self.apply_category_btn.setEnabled(False)
+        categories_layout.addWidget(self.apply_category_btn)
         
         splitter.addWidget(categories_widget)
         
@@ -3192,10 +3184,12 @@ class LinkingWidget(QWidget):
         
         # Clear selection
         self.selected_component_label.setText("No component selected")
-        self.available_categories.clear()
-        self.assigned_categories.clear()
-        self.assign_button.setEnabled(False)
-        self.remove_button.setEnabled(False)
+        self.category_button_group.setExclusive(False)  # Allow clearing all buttons
+        for radio_button in self.category_radio_buttons.values():
+            radio_button.setChecked(False)
+        self.category_radio_buttons["OTHER COMPONENTS"].setChecked(True)  # Set default
+        self.category_button_group.setExclusive(True)  # Re-enable exclusivity
+        self.apply_category_btn.setEnabled(False)
     
     def filter_components(self):
         """Filter components based on search text"""
@@ -3228,7 +3222,7 @@ class LinkingWidget(QWidget):
             self.components_table.setItem(row, 2, QTableWidgetItem(component[2] or ''))
             
             # Categories (joined as comma-separated string)
-            categories_str = component[4] if component[4] else "None"
+            categories_str = component[4] if component[4] else "OTHER COMPONENTS"
             self.components_table.setItem(row, 3, QTableWidgetItem(categories_str))
         
         # Sort by ID ascending
@@ -3245,60 +3239,75 @@ class LinkingWidget(QWidget):
         
         self.selected_component_label.setText(f"Selected: {component_identifier}")
         
-        # Load categories for this component
-        self.load_categories_for_component(component_id)
+        # Load current category for this component
+        self.load_current_category(component_id)
         
-        # Enable buttons
-        self.assign_button.setEnabled(True)
-        self.remove_button.setEnabled(True)
+        # Enable apply button
+        self.apply_category_btn.setEnabled(True)
     
-    def load_categories_for_component(self, component_id):
-        """Load available and assigned categories for a component"""
-        # Get all categories
-        all_categories = self.db_manager.get_categories()
-        
+    def load_current_category(self, component_id):
+        """Load current category assignment for a component"""
         # Get categories assigned to this component
-        assigned_category_ids = self.db_manager.get_component_categories(component_id)
-        assigned_ids_set = set(assigned_category_ids)
+        assigned_categories = self.db_manager.get_component_categories(component_id)
         
-        # Clear lists
-        self.available_categories.clear()
-        self.assigned_categories.clear()
+        # Clear all radio buttons first
+        self.category_button_group.setExclusive(False)
+        for radio_button in self.category_radio_buttons.values():
+            radio_button.setChecked(False)
+        self.category_button_group.setExclusive(True)
         
-        # Populate lists
-        for category in all_categories:
-            category_id, name, description = category[0], category[1], category[2]  # Extract specific columns
-            display_text = f"{name}"
-            if description:
-                display_text += f" ({description})"
-            
-            item = QListWidgetItem(display_text)
-            item.setData(Qt.UserRole, category_id)
-            
-            if category_id in assigned_ids_set:
-                self.assigned_categories.addItem(item)
-            else:
-                self.available_categories.addItem(item)
+        # If component has a category assigned, select it
+        if assigned_categories:
+            # Assuming single category assignment, get the first one
+            category_name = assigned_categories[0][1]  # Get category name
+            if category_name in self.category_radio_buttons:
+                self.category_radio_buttons[category_name].setChecked(True)
+        else:
+            # No category assigned, default to "OTHER COMPONENTS"
+            self.category_radio_buttons["OTHER COMPONENTS"].setChecked(True)
     
-    def assign_category(self):
-        """Assign selected category to component"""
-        current_component_row = self.components_table.currentRow()
-        current_category_item = self.available_categories.currentItem()
-        
-        if current_component_row < 0 or current_category_item is None:
-            QMessageBox.warning(self, "Warning", "Please select a component and an available category!")
+    def on_category_selected(self):
+        """Handle category radio button selection"""
+        # Enable apply button when a category is selected
+        self.apply_category_btn.setEnabled(True)
+    
+    def apply_selected_category(self):
+        """Apply the selected category to the component"""
+        current_row = self.components_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Warning", "Please select a component first!")
             return
         
-        component_id = int(self.components_table.item(current_component_row, 0).text())
-        category_id = current_category_item.data(Qt.UserRole)
+        component_id = int(self.components_table.item(current_row, 0).text())
+        
+        # Find which radio button is selected
+        selected_category = None
+        for category, radio_button in self.category_radio_buttons.items():
+            if radio_button.isChecked():
+                selected_category = category
+                break
+        
+        if selected_category is None:
+            QMessageBox.warning(self, "Warning", "Please select a category!")
+            return
         
         try:
-            self.db_manager.add_component_category(component_id, category_id)
+            # First remove all existing categories for this component
+            assigned_categories = self.db_manager.get_component_categories(component_id)
+            for category in assigned_categories:
+                self.db_manager.remove_component_category(component_id, category[0])
             
-            # Move item from available to assigned
-            row = self.available_categories.row(current_category_item)
-            item = self.available_categories.takeItem(row)
-            self.assigned_categories.addItem(item)
+            # Assign the selected category
+            # Get the category ID for the selected category name
+            all_categories = self.db_manager.get_categories()
+            category_id = None
+            for cat in all_categories:
+                if cat[1] == selected_category:  # cat[1] is the name
+                    category_id = cat[0]  # cat[0] is the ID
+                    break
+            
+            if category_id:
+                self.db_manager.add_component_category(component_id, category_id)
             
             # Refresh the components table to show updated categories
             self.refresh_data()
@@ -3309,40 +3318,12 @@ class LinkingWidget(QWidget):
                     self.components_table.selectRow(row)
                     break
             
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to assign category: {str(e)}")
-    
-    def remove_category(self):
-        """Remove selected category from component"""
-        current_component_row = self.components_table.currentRow()
-        current_category_item = self.assigned_categories.currentItem()
-        
-        if current_component_row < 0 or current_category_item is None:
-            QMessageBox.warning(self, "Warning", "Please select a component and an assigned category!")
-            return
-        
-        component_id = int(self.components_table.item(current_component_row, 0).text())
-        category_id = current_category_item.data(Qt.UserRole)
-        
-        try:
-            self.db_manager.remove_component_category(component_id, category_id)
-            
-            # Move item from assigned to available
-            row = self.assigned_categories.row(current_category_item)
-            item = self.assigned_categories.takeItem(row)
-            self.available_categories.addItem(item)
-            
-            # Refresh the components table to show updated categories
-            self.refresh_data()
-            
-            # Re-select the component
-            for row in range(self.components_table.rowCount()):
-                if int(self.components_table.item(row, 0).text()) == component_id:
-                    self.components_table.selectRow(row)
-                    break
+            # Show success popup only if enabled in settings
+            if self.db_manager.get_setting('show_success_popups', 'true') == 'true':
+                QMessageBox.information(self, "Success", "Category updated successfully!")
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to remove category: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to update category: {str(e)}")
 
 
 class ExportReportsWidget(QWidget):
@@ -3357,11 +3338,11 @@ class ExportReportsWidget(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         
-        # Title
-        title = QLabel("Export Reports Manager")
-        title.setFont(QFont("Arial", 16, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        # # Title
+        # title = QLabel("Export Reports Manager")
+        # title.setFont(QFont("Arial", 16, QFont.Bold))
+        # title.setAlignment(Qt.AlignCenter)
+        # layout.addWidget(title)
         
         # Main content area with splitter
         splitter = QSplitter(Qt.Horizontal)
@@ -3399,30 +3380,6 @@ class ExportReportsWidget(QWidget):
         date_range_layout.addRow("From Date:", self.date_from)
         date_range_layout.addRow("To Date:", self.date_to)
         export_layout.addLayout(date_range_layout)
-        
-        # Category filters
-        category_filter_section = QGroupBox("Category Filters")
-        category_filter_layout = QVBoxLayout(category_filter_section)
-        
-        self.category_checkboxes = {}
-        categories = ['RESISTOR', 'CAPACITOR', 'DIODE', 'IC', 'TRANSISTORS', 'OTHER COMPONENTS']
-        
-        select_all_layout = QHBoxLayout()
-        self.select_all_btn = QPushButton("Select All")
-        self.deselect_all_btn = QPushButton("Deselect All")
-        self.select_all_btn.clicked.connect(self.select_all_categories)
-        self.deselect_all_btn.clicked.connect(self.deselect_all_categories)
-        select_all_layout.addWidget(self.select_all_btn)
-        select_all_layout.addWidget(self.deselect_all_btn)
-        category_filter_layout.addLayout(select_all_layout)
-        
-        for category in categories:
-            checkbox = QCheckBox(category)
-            checkbox.setChecked(True)  # Default all selected
-            self.category_checkboxes[category] = checkbox
-            category_filter_layout.addWidget(checkbox)
-        
-        export_layout.addWidget(category_filter_section)
         
         # Export buttons
         export_buttons_layout = QVBoxLayout()
@@ -3539,19 +3496,9 @@ class ExportReportsWidget(QWidget):
         # Clear preview when student changes
         self.preview_text.clear()
     
-    def select_all_categories(self):
-        """Select all category checkboxes"""
-        for checkbox in self.category_checkboxes.values():
-            checkbox.setChecked(True)
-    
-    def deselect_all_categories(self):
-        """Deselect all category checkboxes"""
-        for checkbox in self.category_checkboxes.values():
-            checkbox.setChecked(False)
-    
     def get_selected_categories(self):
-        """Get list of selected categories"""
-        return [category for category, checkbox in self.category_checkboxes.items() if checkbox.isChecked()]
+        """Get all categories since filter is removed"""
+        return ['RESISTOR', 'CAPACITOR', 'DIODE', 'IC', 'TRANSISTORS', 'OTHER COMPONENTS']
     
     def preview_export(self):
         """Generate preview of the export"""
@@ -3653,7 +3600,7 @@ class ExportReportsWidget(QWidget):
             preview_lines.append(f"Used: {abs(used_amount):.2f}")
             preview_lines.append(f"Balance: {final_balance:.2f}")
             preview_lines.append("")
-            preview_lines.append(f"Selected Categories: {', '.join(selected_categories)}")
+            preview_lines.append(f"Including All Categories: {', '.join(selected_categories)}")
             preview_lines.append(f"Total Transactions: {len(transactions)}")
             preview_lines.append("")
             
@@ -3665,8 +3612,8 @@ class ExportReportsWidget(QWidget):
                     if component:
                         component_name = component[1]
                         component_desc = component[2] if component[2] else ""
-                        # Determine the category for this component
-                        category = self.categorize_component(component_name, component_desc)
+                        # Get category from database first, fallback to dynamic categorization
+                        category = self.db_manager.get_component_category(transaction[2], component_name, component_desc)
                         preview_lines.append(f"  {i+1}. {component_name} [{category}]: Qty {transaction[3]}, ${transaction[5]:.2f}")
                     else:
                         preview_lines.append(f"  {i+1}. Unknown [UNKNOWN]: Qty {transaction[3]}, ${transaction[5]:.2f}")
@@ -3724,8 +3671,8 @@ class ExportReportsWidget(QWidget):
                 component_code = component[1]
                 component_desc = component[2]
                 
-                # Determine category based on component code/description
-                category = self.categorize_component(component_code, component_desc)
+                # Get category from database first, fallback to dynamic categorization
+                category = self.db_manager.get_component_category(component_id, component_code, component_desc)
                 
                 # Only include if category is selected
                 if category in selected_categories:
@@ -4003,6 +3950,26 @@ class SettingsWidget(QWidget):
         
         settings_layout.addRow("Purchase Confirmations:", self.confirm_purchases_checkbox)
         
+        # Success popup setting
+        self.show_success_popups_checkbox = QCheckBox()
+        self.show_success_popups_checkbox.setText("Show success confirmation popups")
+        self.show_success_popups_checkbox.setToolTip(
+            "When enabled, shows success messages after completing actions (e.g., 'Category updated successfully!')"
+        )
+        self.show_success_popups_checkbox.stateChanged.connect(self.save_settings)
+        
+        settings_layout.addRow("Success Popups:", self.show_success_popups_checkbox)
+        
+        # Info popup setting
+        self.show_info_popups_checkbox = QCheckBox()
+        self.show_info_popups_checkbox.setText("Show all informational popups")
+        self.show_info_popups_checkbox.setToolTip(
+            "When enabled, shows informational messages like export results, import summaries, etc."
+        )
+        self.show_info_popups_checkbox.stateChanged.connect(self.save_settings)
+        
+        settings_layout.addRow("Info Popups:", self.show_info_popups_checkbox)
+        
         # Add some spacing
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
         
@@ -4015,10 +3982,20 @@ class SettingsWidget(QWidget):
             # Load purchase confirmation setting (default: True)
             confirm_purchases = self.db_manager.get_setting('confirm_purchases', 'true')
             self.confirm_purchases_checkbox.setChecked(confirm_purchases.lower() == 'true')
+            
+            # Load success popups setting (default: False to reduce interruptions)
+            show_success_popups = self.db_manager.get_setting('show_success_popups', 'false')
+            self.show_success_popups_checkbox.setChecked(show_success_popups.lower() == 'true')
+            
+            # Load info popups setting (default: False to reduce interruptions)
+            show_info_popups = self.db_manager.get_setting('show_info_popups', 'false')
+            self.show_info_popups_checkbox.setChecked(show_info_popups.lower() == 'true')
         except Exception as e:
             print(f"Error loading settings: {e}")
             # Set defaults
             self.confirm_purchases_checkbox.setChecked(True)
+            self.show_success_popups_checkbox.setChecked(False)
+            self.show_info_popups_checkbox.setChecked(False)
     
     def save_settings(self):
         """Save settings to database"""
@@ -4026,6 +4003,14 @@ class SettingsWidget(QWidget):
             # Save purchase confirmation setting
             confirm_purchases = 'true' if self.confirm_purchases_checkbox.isChecked() else 'false'
             self.db_manager.set_setting('confirm_purchases', confirm_purchases)
+            
+            # Save success popups setting
+            show_success_popups = 'true' if self.show_success_popups_checkbox.isChecked() else 'false'
+            self.db_manager.set_setting('show_success_popups', show_success_popups)
+            
+            # Save info popups setting
+            show_info_popups = 'true' if self.show_info_popups_checkbox.isChecked() else 'false'
+            self.db_manager.set_setting('show_info_popups', show_info_popups)
         except Exception as e:
             print(f"Error saving settings: {e}")
     
@@ -4204,6 +4189,11 @@ class ComponentManagerApp(QMainWindow):
         current_widget = self.tab_widget.widget(index)
         if hasattr(current_widget, 'refresh_data'):
             current_widget.refresh_data()
+    
+    def show_success_message(self, title, message):
+        """Show success message if enabled in settings"""
+        if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+            QMessageBox.information(self, title, message)
     
     def import_csv(self):
         """Switch to components tab and trigger CSV import"""
