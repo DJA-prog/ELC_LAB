@@ -97,6 +97,7 @@ class DatabaseManager:
                 description TEXT,
                 price FLOAT DEFAULT 0.0,
                 quantity INTEGER DEFAULT 0,
+                category TEXT DEFAULT 'OTHER COMPONENTS',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -107,28 +108,10 @@ class DatabaseManager:
         columns = [column[1] for column in cursor.fetchall()]
         if 'quantity' not in columns:
             cursor.execute('ALTER TABLE components ADD COLUMN quantity INTEGER DEFAULT 0')
-        
-        # Create categories table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create component_category linking table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS component_category (
-                component_id INTEGER,
-                category_id INTEGER,
-                PRIMARY KEY (component_id, category_id),
-                FOREIGN KEY (component_id) REFERENCES components(id),
-                FOREIGN KEY (category_id) REFERENCES categories(id)
-            )
-        ''')
+            
+        # Check if category column exists, add if not
+        if 'category' not in columns:
+            cursor.execute('ALTER TABLE components ADD COLUMN category TEXT DEFAULT "OTHER COMPONENTS"')
         
         # Create students table
         cursor.execute('''
@@ -177,51 +160,16 @@ class DatabaseManager:
         
         conn.commit()
         conn.close()
-        
-        # Initialize standard categories
-        self.initialize_standard_categories()
     
-    def initialize_standard_categories(self):
-        """Initialize the 6 standard categories"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # Define the 6 standard categories in the specific order
-        standard_categories = [
-            ("RESISTOR", "Resistors and resistor networks"),
-            ("CAPACITOR", "Capacitors of all types"),
-            ("DIODE", "Diodes and related components"),
-            ("IC", "Integrated circuits"),
-            ("TRANSISTORS", "Transistors and FETs"),
-            ("OTHER COMPONENTS", "All other electronic components")
-        ]
-        
-        # Check if categories already exist
-        cursor.execute("SELECT COUNT(*) FROM categories")
-        count = cursor.fetchone()[0]
-        
-        if count == 0:
-            # Insert all standard categories
-            for name, description in standard_categories:
-                cursor.execute('''
-                    INSERT INTO categories (name, description)
-                    VALUES (?, ?)
-                ''', (name, description))
-        # elif count != 6:
-        #     # Wrong number of categories, reset them
-        #     cursor.execute("DELETE FROM component_category")  # Clear links first
-        #     cursor.execute("DELETE FROM categories")  # Clear categories
-            
-        #     # Insert standard categories
-        #     for name, description in standard_categories:
-        #         cursor.execute('''
-        #             INSERT INTO categories (name, description)
-        #             VALUES (?, ?)
-        #         ''', (name, description))
-        # # If count == 6, assume categories are correct and don't touch them
-        
-        conn.commit()
-        conn.close()
+    # Hardcoded categories - no longer stored in database
+    STANDARD_CATEGORIES = [
+        'RESISTOR',
+        'CAPACITOR', 
+        'DIODE',
+        'IC',
+        'TRANSISTORS',
+        'OTHER COMPONENTS'
+    ]
     
     def categorize_component(self, component_code, component_desc):
         """Categorize component based on code and description"""
@@ -267,20 +215,21 @@ class DatabaseManager:
         return 'OTHER COMPONENTS'
     
     def get_component_category(self, component_id, component_code=None, component_desc=None):
-        """Get component category from database first, fallback to dynamic categorization"""
-        # First check if component has manually assigned category in database
-        assigned_categories = self.get_component_categories(component_id)
-        if assigned_categories:
-            return assigned_categories[0][1]  # Return the category name
+        """Get component category from the component record"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
         
-        # Fallback to dynamic categorization if no manual assignment
-        if component_code is not None:
+        # Get category directly from components table
+        cursor.execute('SELECT category FROM components WHERE id = ?', (component_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            return result[0]
+        
+        # If no category is set, use auto-categorization as fallback
+        if component_code and component_desc:
             return self.categorize_component(component_code, component_desc)
-        
-        # If we only have component_id, get the component details first
-        component = self.get_component_by_id(component_id)
-        if component:
-            return self.categorize_component(component[1], component[2])
         
         return 'OTHER COMPONENTS'
     
@@ -288,15 +237,15 @@ class DatabaseManager:
         """Get database connection"""
         return sqlite3.connect(self.db_path)
     
-    def insert_component(self, identifier, description, price, quantity=0):
-        """Insert a new component"""
+    def insert_component(self, identifier, description, price, quantity=0, category='OTHER COMPONENTS'):
+        """Insert a new component with category"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO components (identifier, description, price, quantity, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (identifier, description, price, quantity, datetime.now().isoformat()))
+            INSERT INTO components (identifier, description, price, quantity, category, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (identifier, description, price, quantity, category, datetime.now().isoformat()))
         
         component_id = cursor.lastrowid
         conn.commit()
@@ -358,59 +307,29 @@ class DatabaseManager:
         conn.close()
         return components
     
-    def get_categories(self):
-        """Get all categories"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM categories ORDER BY name')
-        categories = cursor.fetchall()
-        conn.close()
-        return categories
-    
-    def get_component_categories(self, component_id):
-        """Get categories linked to a component"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT c.* FROM categories c
-            JOIN component_category cc ON c.id = cc.category_id
-            WHERE cc.component_id = ?
-            ORDER BY c.name
-        ''', (component_id,))
-        
-        categories = cursor.fetchall()
-        conn.close()
-        return categories
-    
-    def get_category_components(self, category_id):
-        """Get components linked to a category"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT c.* FROM components c
-            JOIN component_category cc ON c.id = cc.component_id
-            WHERE cc.category_id = ?
-            ORDER BY c.identifier
-        ''', (category_id,))
-        
-        components = cursor.fetchall()
-        conn.close()
-        return components
-    
-    def update_component(self, component_id, identifier, description, price, quantity=None):
+    def update_component(self, component_id, identifier, description, price, quantity=None, category=None):
         """Update an existing component"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        if quantity is not None:
+        if quantity is not None and category is not None:
+            cursor.execute('''
+                UPDATE components 
+                SET identifier = ?, description = ?, price = ?, quantity = ?, category = ?, updated_at = ?
+                WHERE id = ?
+            ''', (identifier, description, price, quantity, category, datetime.now().isoformat(), component_id))
+        elif quantity is not None:
             cursor.execute('''
                 UPDATE components 
                 SET identifier = ?, description = ?, price = ?, quantity = ?, updated_at = ?
                 WHERE id = ?
             ''', (identifier, description, price, quantity, datetime.now().isoformat(), component_id))
+        elif category is not None:
+            cursor.execute('''
+                UPDATE components 
+                SET identifier = ?, description = ?, price = ?, category = ?, updated_at = ?
+                WHERE id = ?
+            ''', (identifier, description, price, category, datetime.now().isoformat(), component_id))
         else:
             cursor.execute('''
                 UPDATE components 
@@ -879,16 +798,17 @@ class ComponentWidget(QWidget):
         self.quantity_edit.setMaximum(99999)
         self.quantity_edit.setValue(0)
         
-        # Category selection
-        self.category_list = QListWidget()
-        self.category_list.setMaximumHeight(60)
-        self.category_list.setSelectionMode(QListWidget.MultiSelection)  # Allow multiple selections
+        # Category selection - single selection dropdown
+        self.category_combo = QComboBox()
+        for category in self.db_manager.STANDARD_CATEGORIES:
+            self.category_combo.addItem(category)
+        self.category_combo.setCurrentText('OTHER COMPONENTS')  # Default selection
         
         form_layout.addRow("Identifier:", self.identifier_edit)
         form_layout.addRow("Description:", self.description_edit)
         form_layout.addRow("Price:", self.price_edit)
         form_layout.addRow("Stock Quantity:", self.quantity_edit)
-        form_layout.addRow("Categories:", self.category_list)
+        form_layout.addRow("Category:", self.category_combo)
         
         # Buttons - remove update button, keep others
         button_layout = QHBoxLayout()
@@ -921,7 +841,7 @@ class ComponentWidget(QWidget):
         self.search_edit.textChanged.connect(self.filter_components)
         
         clear_search_button = QPushButton("Clear")
-        clear_search_button.setMaximumWidth(60)
+        clear_search_button.setMaximumWidth(80)
         clear_search_button.clicked.connect(self.clear_search)
         
         search_layout.addWidget(search_label)
@@ -931,8 +851,8 @@ class ComponentWidget(QWidget):
         table_layout.addLayout(search_layout)
         
         self.components_table = QTableWidget()
-        self.components_table.setColumnCount(5)  # Updated to include quantity column
-        self.components_table.setHorizontalHeaderLabels(['ID', 'Identifier', 'Description', 'Price', 'Stock'])
+        self.components_table.setColumnCount(6)  # Updated to include category column
+        self.components_table.setHorizontalHeaderLabels(['ID', 'Identifier', 'Description', 'Price', 'Stock', 'Category'])
         
         # Enable sorting
         self.components_table.setSortingEnabled(True)
@@ -969,9 +889,6 @@ class ComponentWidget(QWidget):
         
         # Initial state
         self.delete_button.setEnabled(False)
-        
-        # Load categories into the list
-        self.refresh_categories_list()
         
         # Store all components for filtering
         self.all_components = []
@@ -1050,40 +967,12 @@ class ComponentWidget(QWidget):
         self.components_table.setSortingEnabled(True)
         self.components_table.sortItems(0, Qt.AscendingOrder)
     
-    def refresh_categories_list(self):
-        """Populate the category list widget"""
-        self.category_list.clear()
-        categories = self.db_manager.get_categories()
-        
-        for category in categories:
-            item = QListWidgetItem(category[1])  # category name
-            item.setData(Qt.UserRole, category[0])  # store category ID
-            self.category_list.addItem(item)
-    
-    def get_selected_category_ids(self):
-        """Get list of selected category IDs"""
-        selected_ids = []
-        for item in self.category_list.selectedItems():
-            category_id = item.data(Qt.UserRole)
-            selected_ids.append(category_id)
-        return selected_ids
-    
-    def set_selected_categories(self, category_ids):
-        """Select categories in the list by their IDs"""
-        self.category_list.clearSelection()
-        
-        for i in range(self.category_list.count()):
-            item = self.category_list.item(i)
-            category_id = item.data(Qt.UserRole)
-            if category_id in category_ids:
-                item.setSelected(True)
-    
     def add_component(self):
         identifier = self.identifier_edit.text().strip()
-        description = self.description_edit.text().strip()  # Changed from toPlainText()
+        description = self.description_edit.text().strip()
         price = self.price_edit.value()
         quantity = self.quantity_edit.value()
-        selected_category_ids = self.get_selected_category_ids()
+        category = self.category_combo.currentText()
         
         if not identifier:
             QMessageBox.warning(self, "Warning", "Identifier is required!")
@@ -1091,29 +980,18 @@ class ComponentWidget(QWidget):
         
         try:
             if self.selected_component_id is not None:
-                # Update existing component
-                self.db_manager.update_component(self.selected_component_id, identifier, description, price, quantity)
+                # Update existing component including category
+                self.db_manager.update_component(self.selected_component_id, identifier, description, price, quantity, category)
                 
-                # Update category links - first remove all existing links
-                existing_categories = self.db_manager.get_component_categories(self.selected_component_id)
-                for cat in existing_categories:
-                    self.db_manager.unlink_component_category(self.selected_component_id, cat[0])
-                
-                # Add new category links
-                for category_id in selected_category_ids:
-                    self.db_manager.link_component_category(self.selected_component_id, category_id)
-                
-                QMessageBox.information(self, "Success", "Component updated successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Component updated successfully!")
                 self.componentUpdated.emit()
             else:
-                # Add new component
-                component_id = self.db_manager.insert_component(identifier, description, price, quantity)
+                # Add new component with category
+                component_id = self.db_manager.insert_component(identifier, description, price, quantity, category)
                 
-                # Add category links
-                for category_id in selected_category_ids:
-                    self.db_manager.link_component_category(component_id, category_id)
-                
-                QMessageBox.information(self, "Success", "Component added successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Component added successfully!")
                 self.componentAdded.emit()
             
             self.clear_form()
@@ -1138,7 +1016,8 @@ class ComponentWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.delete_component(self.selected_component_id)
-                QMessageBox.information(self, "Success", "Component deleted successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Component deleted successfully!")
                 self.clear_form()
                 self.refresh_components()
                 self.componentUpdated.emit()
@@ -1198,10 +1077,20 @@ class ComponentWidget(QWidget):
         self.description_edit.setText(description)  # Changed from setPlainText()
         self.price_edit.setValue(price)
         
-        # Load associated categories
-        component_categories = self.db_manager.get_component_categories(component_id)
-        category_ids = [cat[0] for cat in component_categories]
-        self.set_selected_categories(category_ids)
+        # Load component's category
+        component = self.db_manager.get_component_by_id(component_id)
+        if component and len(component) > 5:  # Check if category field exists
+            category = component[5]  # Category is at index 5
+            if category:
+                index = self.category_combo.findText(category)
+                if index >= 0:
+                    self.category_combo.setCurrentIndex(index)
+                else:
+                    self.category_combo.setCurrentText('OTHER COMPONENTS')
+            else:
+                self.category_combo.setCurrentText('OTHER COMPONENTS')
+        else:
+            self.category_combo.setCurrentText('OTHER COMPONENTS')
         
         # Enable delete button
         self.delete_button.setEnabled(True)
@@ -1233,7 +1122,8 @@ class ComponentWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.delete_component(component_id)
-                QMessageBox.information(self, "Success", "Component deleted successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Component deleted successfully!")
                 self.clear_form()
                 self.refresh_components()
                 self.componentUpdated.emit()
@@ -1254,10 +1144,20 @@ class ComponentWidget(QWidget):
         self.price_edit.setValue(price)
         self.quantity_edit.setValue(quantity)
         
-        # Load associated categories
-        component_categories = self.db_manager.get_component_categories(component_id)
-        category_ids = [cat[0] for cat in component_categories]
-        self.set_selected_categories(category_ids)
+        # Load component's category
+        component = self.db_manager.get_component_by_id(component_id)
+        if component and len(component) > 5:  # Check if category field exists
+            category = component[5]  # Category is at index 5
+            if category:
+                index = self.category_combo.findText(category)
+                if index >= 0:
+                    self.category_combo.setCurrentIndex(index)
+                else:
+                    self.category_combo.setCurrentText('OTHER COMPONENTS')
+            else:
+                self.category_combo.setCurrentText('OTHER COMPONENTS')
+        else:
+            self.category_combo.setCurrentText('OTHER COMPONENTS')
         
         self.delete_button.setEnabled(True)
         
@@ -1313,7 +1213,8 @@ class ComponentWidget(QWidget):
             if results['errors'] > 0:
                 message += f"• Errors encountered: {results['errors']}\n"
             
-            QMessageBox.information(self, "Import Results", message)
+            if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+                QMessageBox.information(self, "Import Results", message)
             
             # Refresh the table and emit signals
             self.refresh_components()
@@ -1389,7 +1290,7 @@ class StudentWidget(QWidget):
         self.search_edit.textChanged.connect(self.filter_students)
         
         clear_search_button = QPushButton("Clear")
-        clear_search_button.setMaximumWidth(60)
+        clear_search_button.setMaximumWidth(80)
         clear_search_button.clicked.connect(self.clear_search)
         
         search_layout.addWidget(search_label)
@@ -1467,12 +1368,14 @@ class StudentWidget(QWidget):
                 # Update existing student - preserve current final balance but update initial balance
                 current_final_balance = self.db_manager.get_student_final_balance(self.selected_student_id)
                 self.db_manager.update_student(self.selected_student_id, name, number, email, phone, current_final_balance, initial_balance)
-                QMessageBox.information(self, "Success", "Student updated successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Student updated successfully!")
                 self.studentUpdated.emit()
             else:
                 # Add new student
                 self.db_manager.insert_student(name, number, email, phone, initial_balance, initial_balance)
-                QMessageBox.information(self, "Success", "Student added successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Student added successfully!")
                 self.studentAdded.emit()
             
             self.clear_form()
@@ -1496,7 +1399,8 @@ class StudentWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.delete_student(self.selected_student_id)
-                QMessageBox.information(self, "Success", "Student deleted successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Student deleted successfully!")
                 self.clear_form()
                 self.refresh_students()
                 self.studentUpdated.emit()
@@ -1569,11 +1473,12 @@ class StudentWidget(QWidget):
         item = self.students_table.item(current_row, 0)
         self.on_student_selected(item)
         
-        QMessageBox.information(
-            self, 
-            "Edit Student", 
-            "Student loaded into form. Modify the values and click 'Update Student' to save changes."
-        )
+        if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+            QMessageBox.information(
+                self, 
+                "Edit Student", 
+                "Student loaded into form. Modify the values and click 'Update Student' to save changes."
+            )
     
     def delete_selected_student(self):
         """Delete the currently selected student"""
@@ -1663,368 +1568,6 @@ class StudentWidget(QWidget):
         """Refresh the students list from database"""
         self.all_students = self.db_manager.get_students()
         self.filter_students()
-
-
-class StudentCostsWidget(QWidget):
-    """Widget for managing student costs and component purchases"""
-    
-    def __init__(self, db_manager):
-        super().__init__()
-        self.db_manager = db_manager
-        self.init_ui()
-        self.refresh_data()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        
-        # Top section - Add new transaction
-        transaction_widget = QGroupBox("Add Component Purchase")
-        transaction_layout = QFormLayout(transaction_widget)
-        
-        self.student_combo = SearchableComboBox()
-        self.component_combo = QComboBox()
-        self.quantity_spin = QDoubleSpinBox()
-        self.quantity_spin.setMinimum(-999.0)  # Allow negative values for returns/refunds
-        self.quantity_spin.setMaximum(999.0)
-        self.quantity_spin.setDecimals(1)
-        self.quantity_spin.setValue(1.0)
-        
-        self.unit_price_edit = QDoubleSpinBox()
-        self.unit_price_edit.setMaximum(9999.99)
-        self.unit_price_edit.setDecimals(2)
-        
-        self.notes_edit = QLineEdit()
-        
-        transaction_layout.addRow("Student:", self.student_combo)
-        transaction_layout.addRow("Component:", self.component_combo)
-        
-        # Add helpful label for quantity
-        quantity_label = QLabel("Quantity: (Use negative for returns)")
-        quantity_label.setStyleSheet("color: #666; font-size: 10px;")
-        transaction_layout.addRow(quantity_label, self.quantity_spin)
-        transaction_layout.addRow("Unit Price:", self.unit_price_edit)
-        transaction_layout.addRow("Notes:", self.notes_edit)
-        
-        # Auto-fill price when component is selected
-        self.component_combo.currentIndexChanged.connect(self.on_component_selected)
-        
-        # Transaction buttons
-        transaction_button_layout = QHBoxLayout()
-        self.add_transaction_button = QPushButton("Add Transaction")
-        self.refresh_button = QPushButton("Refresh Data")
-        
-        self.add_transaction_button.clicked.connect(self.add_transaction)
-        self.refresh_button.clicked.connect(self.refresh_data)
-        
-        transaction_button_layout.addWidget(self.add_transaction_button)
-        transaction_button_layout.addWidget(self.refresh_button)
-        
-        transaction_layout.addRow(transaction_button_layout)
-        
-        # Bottom section - Transactions table
-        table_widget = QGroupBox("Student Transactions")
-        table_layout = QVBoxLayout(table_widget)
-        
-        # Search and filter bar
-        filter_layout = QHBoxLayout()
-        
-        filter_student_label = QLabel("Filter by Student:")
-        self.filter_student_combo = SearchableComboBox()
-        self.filter_student_combo.addItem("All Students", None)
-        self.filter_student_combo.currentIndexChanged.connect(self.filter_transactions)
-        
-        search_label = QLabel("Search:")
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search transactions...")
-        self.search_edit.textChanged.connect(self.filter_transactions)
-        
-        clear_filters_button = QPushButton("Clear Filters")
-        clear_filters_button.clicked.connect(self.clear_filters)
-        
-        filter_layout.addWidget(filter_student_label)
-        filter_layout.addWidget(self.filter_student_combo)
-        filter_layout.addWidget(search_label)
-        filter_layout.addWidget(self.search_edit)
-        filter_layout.addWidget(clear_filters_button)
-        
-        table_layout.addLayout(filter_layout)
-        
-        # Summary info
-        summary_layout = QHBoxLayout()
-        self.total_label = QLabel("Total Transactions: 0")
-        self.total_cost_label = QLabel("Total Cost: $0.00")
-        
-        summary_layout.addWidget(self.total_label)
-        summary_layout.addWidget(self.total_cost_label)
-        summary_layout.addStretch()
-        
-        table_layout.addLayout(summary_layout)
-        
-        # Transactions table
-        self.transactions_table = QTableWidget()
-        self.transactions_table.setColumnCount(9)
-        self.transactions_table.setHorizontalHeaderLabels([
-            'ID', 'Student', 'Student Number', 'Component', 'Quantity', 
-            'Unit Price', 'Total Cost', 'Date', 'Notes'
-        ])
-        
-        # Enable sorting
-        self.transactions_table.setSortingEnabled(True)
-        
-        # Set column widths
-        header = self.transactions_table.horizontalHeader()
-        header.setStretchLastSection(True)  # Notes column stretches
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # ID
-        header.setSectionResizeMode(1, QHeaderView.Stretch)          # Student name
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Student number
-        header.setSectionResizeMode(3, QHeaderView.Stretch)          # Component
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Quantity
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Unit price
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents) # Total cost
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents) # Date
-        
-        # Set selection behavior
-        self.transactions_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.transactions_table.setSelectionMode(QTableWidget.SingleSelection)
-        
-        # Context menu
-        self.transactions_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.transactions_table.customContextMenuRequested.connect(self.show_transaction_context_menu)
-        
-        table_layout.addWidget(self.transactions_table)
-        
-        # Add widgets to main layout
-        layout.addWidget(transaction_widget)
-        layout.addWidget(table_widget)
-        
-        # Set layout proportions
-        layout.setStretchFactor(transaction_widget, 0)
-        layout.setStretchFactor(table_widget, 1)
-        
-        # Store all transactions for filtering
-        self.all_transactions = []
-    
-    def on_component_selected(self):
-        """Auto-fill unit price when component is selected"""
-        component_id = self.component_combo.currentData()
-        if component_id:
-            # Get component details
-            components = self.db_manager.get_components()
-            for component in components:
-                if component[0] == component_id:
-                    self.unit_price_edit.setValue(component[3])  # Set price
-                    break
-    
-    def add_transaction(self):
-        student_id = self.student_combo.currentData()
-        component_id = self.component_combo.currentData()
-        quantity = self.quantity_spin.value()
-        unit_price = self.unit_price_edit.value()
-        notes = self.notes_edit.text().strip()
-        
-        if student_id is None:
-            QMessageBox.warning(self, "Warning", "Please select a student!")
-            return
-        
-        if component_id is None:
-            QMessageBox.warning(self, "Warning", "Please select a component!")
-            return
-        
-        if quantity == 0:
-            QMessageBox.warning(self, "Warning", "Quantity cannot be zero!")
-            return
-        
-        try:
-            # Check if confirmation is enabled
-            confirm_purchases = self.db_manager.get_setting('confirm_purchases', 'true')
-            should_confirm = confirm_purchases.lower() == 'true'
-            
-            if should_confirm:
-                # Show confirmation dialog
-                reply = QMessageBox.question(
-                    self,
-                    "Confirm Transaction",
-                    f"Add transaction for student?\n\n"
-                    f"Quantity: {quantity:.1f}\n"
-                    f"Unit Price: ${unit_price:.2f}\n"
-                    f"Total: ${quantity * unit_price:.2f}",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                
-                if reply != QMessageBox.Yes:
-                    return
-            
-            self.db_manager.add_transaction(student_id, component_id, quantity, unit_price, notes)
-            
-            if should_confirm:
-                QMessageBox.information(self, "Success", "Transaction added successfully!")
-            
-            # Clear form
-            self.quantity_spin.setValue(1.0)
-            self.notes_edit.clear()
-            
-            self.refresh_data()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to add transaction: {str(e)}")
-    
-    def show_transaction_context_menu(self, position):
-        """Show context menu for transaction table"""
-        item = self.transactions_table.itemAt(position)
-        if item is None:
-            return
-        
-        context_menu = QMenu(self)
-        delete_action = context_menu.addAction("Delete Transaction")
-        delete_action.setIcon(self.style().standardIcon(self.style().SP_TrashIcon))
-        delete_action.triggered.connect(self.delete_selected_transaction)
-        
-        context_menu.exec_(self.transactions_table.mapToGlobal(position))
-    
-    def delete_selected_transaction(self):
-        """Delete the selected transaction"""
-        current_row = self.transactions_table.currentRow()
-        if current_row < 0:
-            return
-        
-        transaction_id = int(self.transactions_table.item(current_row, 0).text())
-        student_name = self.transactions_table.item(current_row, 1).text()
-        component = self.transactions_table.item(current_row, 3).text()
-        total_cost = self.transactions_table.item(current_row, 6).text()
-        
-        reply = QMessageBox.question(
-            self, 
-            "Confirm Delete", 
-            f"Delete transaction?\n\nStudent: {student_name}\nComponent: {component}\nCost: ${total_cost}",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            try:
-                self.db_manager.delete_transaction(transaction_id)
-                QMessageBox.information(self, "Success", "Transaction deleted successfully!")
-                self.refresh_data()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete transaction: {str(e)}")
-    
-    def filter_transactions(self):
-        """Filter transactions based on selected student and search text"""
-        selected_student_id = self.filter_student_combo.currentData()
-        search_text = self.search_edit.text().lower().strip()
-        
-        filtered_transactions = []
-        
-        for transaction in self.all_transactions:
-            # Filter by student if selected
-            if selected_student_id and transaction[1] != selected_student_id:
-                continue
-            
-            # Filter by search text if provided
-            if search_text:
-                student_name = transaction[9].lower()  # student_name
-                component = transaction[12].lower()    # identifier
-                notes = (transaction[8] or '').lower() # notes
-                
-                if not (search_text in student_name or 
-                       search_text in component or 
-                       search_text in notes):
-                    continue
-            
-            filtered_transactions.append(transaction)
-        
-        self.display_transactions(filtered_transactions)
-    
-    def clear_filters(self):
-        """Clear all filters and show all transactions"""
-        self.filter_student_combo.setCurrentIndex(0)  # "All Students"
-        self.search_edit.clear()
-        self.display_transactions(self.all_transactions)
-    
-    def display_transactions(self, transactions):
-        """Display the given list of transactions in the table"""
-        # Temporarily disable sorting to prevent visual issues during table update
-        self.transactions_table.setSortingEnabled(False)
-        
-        self.transactions_table.setRowCount(len(transactions))
-        
-        total_cost = 0.0
-        
-        for row, transaction in enumerate(transactions):
-            # Transaction ID
-            id_item = QTableWidgetItem()
-            id_item.setData(Qt.DisplayRole, transaction[0])
-            self.transactions_table.setItem(row, 0, id_item)
-            
-            # Student info
-            self.transactions_table.setItem(row, 1, QTableWidgetItem(transaction[9]))   # student_name
-            self.transactions_table.setItem(row, 2, QTableWidgetItem(transaction[10]))  # student_number
-            
-            # Component
-            self.transactions_table.setItem(row, 3, QTableWidgetItem(transaction[11]))  # identifier
-            
-            # Quantity
-            quantity_item = QTableWidgetItem()
-            quantity_item.setData(Qt.DisplayRole, transaction[3])
-            quantity_item.setText(f"{transaction[3]:.1f}")
-            self.transactions_table.setItem(row, 4, quantity_item)
-            
-            # Unit price
-            unit_price_item = QTableWidgetItem()
-            unit_price_item.setData(Qt.DisplayRole, transaction[4])
-            unit_price_item.setText(f"{transaction[4]:.2f}")
-            self.transactions_table.setItem(row, 5, unit_price_item)
-            
-            # Total cost
-            total_cost_item = QTableWidgetItem()
-            total_cost_item.setData(Qt.DisplayRole, transaction[5])
-            total_cost_item.setText(f"{transaction[5]:.2f}")
-            self.transactions_table.setItem(row, 6, total_cost_item)
-            
-            # Date
-            date_str = transaction[6][:10] if transaction[6] else ''  # Just the date part
-            self.transactions_table.setItem(row, 7, QTableWidgetItem(date_str))
-            
-            # Notes
-            self.transactions_table.setItem(row, 8, QTableWidgetItem(transaction[8] or ''))
-            
-            total_cost += transaction[5]
-        
-        # Update summary labels
-        self.total_label.setText(f"Total Transactions: {len(transactions)}")
-        self.total_cost_label.setText(f"Total Cost: ${total_cost:.2f}")
-        
-        # Re-enable sorting and sort by ID descending (newest first)
-        self.transactions_table.setSortingEnabled(True)
-        self.transactions_table.sortItems(0, Qt.DescendingOrder)
-    
-    def refresh_data(self):
-        """Refresh all data from database"""
-        # Refresh students combo
-        students = self.db_manager.get_students()
-        self.student_combo.set_student_data(students)
-        
-        self.filter_student_combo.clear()
-        self.filter_student_combo.addItem("All Students", None)
-        
-        # Create a list that includes "All Students" for the searchable combo
-        all_students_list = [("All Students", None)] + [(f"{student[1]} (#{student[2]})", student[0]) for student in students]
-        
-        # Set up the searchable combo with all students including "All Students" option
-        self.filter_student_combo.clear()
-        for text, student_id in all_students_list:
-            self.filter_student_combo.addItem(text, student_id)
-        
-        # Refresh components combo
-        components = self.db_manager.get_components()
-        self.component_combo.clear()
-        
-        for component in components:
-            text = f"{component[1]} - ${component[3]:.2f}"
-            self.component_combo.addItem(text, component[0])
-        
-        # Refresh transactions
-        self.all_transactions = self.db_manager.get_all_transactions()
-        self.filter_transactions()
 
 
 class AddComponentDialog(QDialog):
@@ -2299,17 +1842,16 @@ class StudentReceiptsWidget(QWidget):
         
         # Receipt table (showing all transactions for selected student)
         self.receipt_table = QTableWidget()
-        self.receipt_table.setColumnCount(6)
-        self.receipt_table.setHorizontalHeaderLabels(['Date', 'Component Code', 'Description', 'Qty', 'Unit Price', 'Total'])
+        self.receipt_table.setColumnCount(5)
+        self.receipt_table.setHorizontalHeaderLabels(['Date', 'Component Code', 'Qty', 'Unit Price', 'Total'])
         
         # Set column widths for receipt
         receipt_header = self.receipt_table.horizontalHeader()
         receipt_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Date
         receipt_header.setSectionResizeMode(1, QHeaderView.Stretch)           # Code
-        receipt_header.setSectionResizeMode(2, QHeaderView.Stretch)           # Description
-        receipt_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Qty
-        receipt_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Unit Price
-        receipt_header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Total
+        receipt_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Qty
+        receipt_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Unit Price
+        receipt_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Total
         
         # Enable selection and sorting for receipt
         self.receipt_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2536,7 +2078,8 @@ class StudentReceiptsWidget(QWidget):
                 f"Single purchase - {component_code}"
             )
             
-            if should_confirm:
+            # Show success popup based on settings
+            if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
                 QMessageBox.information(
                     self,
                     "Success",
@@ -2808,27 +2351,26 @@ class StudentReceiptsWidget(QWidget):
             date_str = transaction[6][:10] if transaction[6] else ''  # Just the date part
             self.receipt_table.setItem(row, 0, QTableWidgetItem(date_str))
             
-            # Component code and description from the joined query
+            # Component code from the joined query
             self.receipt_table.setItem(row, 1, QTableWidgetItem(transaction[8]))   # component identifier
-            self.receipt_table.setItem(row, 2, QTableWidgetItem(transaction[9] or ''))  # component description
             
             # Quantity (transaction[3])
             qty_item = QTableWidgetItem()
             qty_item.setData(Qt.DisplayRole, transaction[3])
             qty_item.setText(f"{transaction[3]:.1f}")
-            self.receipt_table.setItem(row, 3, qty_item)
+            self.receipt_table.setItem(row, 2, qty_item)
             
             # Unit price (transaction[4])
             price_item = QTableWidgetItem()
             price_item.setData(Qt.DisplayRole, transaction[4])
             price_item.setText(f"${transaction[4]:.2f}")
-            self.receipt_table.setItem(row, 4, price_item)
+            self.receipt_table.setItem(row, 3, price_item)
             
             # Total (transaction[5])
             total_item = QTableWidgetItem()
             total_item.setData(Qt.DisplayRole, transaction[5])
             total_item.setText(f"${transaction[5]:.2f}")
-            self.receipt_table.setItem(row, 5, total_item)
+            self.receipt_table.setItem(row, 4, total_item)
             
             total_spent += transaction[5]
         
@@ -2879,7 +2421,8 @@ class StudentReceiptsWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.delete_transaction(transaction_id)
-                QMessageBox.information(self, "Success", "Transaction deleted successfully!")
+                if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                    QMessageBox.information(self, "Success", "Transaction deleted successfully!")
                 
                 # Refresh displays
                 self.refresh_purchase_history()
@@ -3247,8 +2790,11 @@ class LinkingWidget(QWidget):
     
     def load_current_category(self, component_id):
         """Load current category assignment for a component"""
-        # Get categories assigned to this component
-        assigned_categories = self.db_manager.get_component_categories(component_id)
+        # Get component's current category
+        component = self.db_manager.get_component_by_id(component_id)
+        current_category = None
+        if component and len(component) > 5:
+            current_category = component[5]  # Category is at index 5
         
         # Clear all radio buttons first
         self.category_button_group.setExclusive(False)
@@ -3257,11 +2803,8 @@ class LinkingWidget(QWidget):
         self.category_button_group.setExclusive(True)
         
         # If component has a category assigned, select it
-        if assigned_categories:
-            # Assuming single category assignment, get the first one
-            category_name = assigned_categories[0][1]  # Get category name
-            if category_name in self.category_radio_buttons:
-                self.category_radio_buttons[category_name].setChecked(True)
+        if current_category and current_category in self.category_radio_buttons:
+            self.category_radio_buttons[current_category].setChecked(True)
         else:
             # No category assigned, default to "OTHER COMPONENTS"
             self.category_radio_buttons["OTHER COMPONENTS"].setChecked(True)
@@ -3292,22 +2835,18 @@ class LinkingWidget(QWidget):
             return
         
         try:
-            # First remove all existing categories for this component
-            assigned_categories = self.db_manager.get_component_categories(component_id)
-            for category in assigned_categories:
-                self.db_manager.remove_component_category(component_id, category[0])
-            
-            # Assign the selected category
-            # Get the category ID for the selected category name
-            all_categories = self.db_manager.get_categories()
-            category_id = None
-            for cat in all_categories:
-                if cat[1] == selected_category:  # cat[1] is the name
-                    category_id = cat[0]  # cat[0] is the ID
-                    break
-            
-            if category_id:
-                self.db_manager.add_component_category(component_id, category_id)
+            # Update component's category directly
+            component = self.db_manager.get_component_by_id(component_id)
+            if component:
+                # Update the component with the new category
+                self.db_manager.update_component(
+                    component_id,
+                    component[1],  # identifier
+                    component[2],  # description
+                    component[3],  # price
+                    component[4],  # quantity
+                    selected_category  # new category
+                )
             
             # Refresh the components table to show updated categories
             self.refresh_data()
@@ -3416,8 +2955,44 @@ class ExportReportsWidget(QWidget):
             }
         """)
         
+        # Export All Students button
+        self.export_all_btn = QPushButton("Export All Students")
+        self.export_all_btn.clicked.connect(self.export_all_students)
+        self.export_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        
+        # Final Statement export button
+        self.export_statement_btn = QPushButton("Export Final Statement")
+        self.export_statement_btn.clicked.connect(self.export_final_statement)
+        self.export_statement_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+        """)
+        
         export_buttons_layout.addWidget(self.preview_btn)
         export_buttons_layout.addWidget(self.export_btn)
+        export_buttons_layout.addWidget(self.export_all_btn)
+        export_buttons_layout.addWidget(self.export_statement_btn)
         export_layout.addLayout(export_buttons_layout)
         
         left_layout.addWidget(export_section)
@@ -3498,7 +3073,7 @@ class ExportReportsWidget(QWidget):
     
     def get_selected_categories(self):
         """Get all categories since filter is removed"""
-        return ['RESISTOR', 'CAPACITOR', 'DIODE', 'IC', 'TRANSISTORS', 'OTHER COMPONENTS']
+        return self.db_manager.STANDARD_CATEGORIES
     
     def preview_export(self):
         """Generate preview of the export"""
@@ -3538,11 +3113,12 @@ class ExportReportsWidget(QWidget):
                 # Generate and save export data
                 self.generate_and_save_export(student_id, filename)
                 
-                QMessageBox.information(
-                    self,
-                    "Export Successful",
-                    f"Report exported successfully to:\n{filename}"
-                )
+                if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+                    QMessageBox.information(
+                        self,
+                        "Export Successful",
+                        f"Report exported successfully to:\n{filename}"
+                    )
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -3550,6 +3126,276 @@ class ExportReportsWidget(QWidget):
                 f"Failed to export report: {str(e)}"
             )
     
+    def export_final_statement(self):
+        """Export final statement for all students"""
+        try:
+            # Get all students
+            students = self.db_manager.get_students()
+            
+            if not students:
+                QMessageBox.warning(self, "No Students", "No students found in the database.")
+                return
+            
+            # Ask user for save location
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Final Statement",
+                f"final_statement_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                "CSV files (*.csv)"
+            )
+            
+            if filename:
+                # Generate and save final statement
+                self.generate_and_save_final_statement(students, filename)
+                
+                if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+                    QMessageBox.information(
+                        self,
+                        "Export Successful",
+                        f"Final statement exported successfully to:\n{filename}\n\nTotal students: {len(students)}"
+                    )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export final statement: {str(e)}"
+            )
+    
+    def generate_and_save_final_statement(self, students, filename):
+        """Generate and save the final statement CSV"""
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)  # Use comma delimiter (default)
+            
+            # Write table headers
+            writer.writerow(['Student Name', 'Student Number', 'Balance', 'DUE TO STUDENT', 'DUE TO NUST'])
+            
+            # Write data for each student
+            for student in students:
+                student_id = student[0]
+                student_name = student[1]
+                student_number = student[2]
+                
+                # Calculate final balance
+                final_balance = self.db_manager.get_student_final_balance(student_id)
+                
+                # Determine DUE TO STUDENT or DUE TO NUST based on balance
+                due_to_student = ''
+                due_to_nust = ''
+                
+                if final_balance > 0:
+                    # Student has credit - money is due to student
+                    due_to_student = f"{final_balance:.2f}"
+                elif final_balance < 0:
+                    # Student owes money - money is due to NUST
+                    due_to_nust = f"{abs(final_balance):.2f}"
+                # If balance is 0, both columns remain empty
+                
+                writer.writerow([
+                    student_name,
+                    student_number,
+                    f"{final_balance:.2f}",
+                    due_to_student,
+                    due_to_nust
+                ])
+    
+    def export_all_students(self):
+        """Export reports for all students to a single CSV file"""
+        try:
+            # Get all students
+            students = self.db_manager.get_students()
+            
+            if not students:
+                QMessageBox.warning(self, "No Students", "No students found in the database.")
+                return
+            
+            # Ask user for save location
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export All Students Reports",
+                f"all_students_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                "CSV files (*.csv)"
+            )
+            
+            if filename:
+                # Generate and save combined export data
+                self.generate_and_save_all_students_export(students, filename)
+                
+                if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+                    QMessageBox.information(
+                        self,
+                        "Export Successful",
+                        f"All students reports exported successfully to:\n{filename}\n\nTotal students: {len(students)}"
+                    )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export all students reports: {str(e)}"
+            )
+    
+    def generate_and_save_all_students_export(self, students, filename):
+        """Generate and save the CSV export for all students"""
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile, delimiter='\t')
+            
+            for i, student in enumerate(students):
+                student_id = student[0]
+                student_name = student[1]
+                student_number = student[2]
+                student_phone = student[5] if len(student) > 5 and student[5] else ""
+                
+                # Calculate balances
+                final_balance = self.db_manager.get_student_final_balance(student_id)
+                initial_balance = student[6] if len(student) > 6 else 0.0
+                
+                try:
+                    initial_balance = float(initial_balance) if initial_balance is not None else 0.0
+                except (ValueError, TypeError):
+                    initial_balance = 0.0
+                
+                used_amount = final_balance - initial_balance
+                
+                # Get transactions
+                transactions = self.db_manager.get_student_transactions(student_id)
+                
+                # Get selected categories (all categories)
+                selected_categories = self.get_selected_categories()
+                
+                # Group transactions by component category
+                component_groups = {
+                    'RESISTOR': {'items': [], 'total': 0},
+                    'CAPACITOR': {'items': [], 'total': 0}, 
+                    'DIODE': {'items': [], 'total': 0},
+                    'IC': {'items': [], 'total': 0},
+                    'TRANSISTORS': {'items': [], 'total': 0},
+                    'OTHER COMPONENTS': {'items': [], 'total': 0}
+                }
+                
+                # Process each transaction
+                for transaction in transactions:
+                    component_id = transaction[2]
+                    quantity = transaction[3]
+                    unit_price = transaction[4]
+                    total_cost = transaction[5]
+                    
+                    # Get component details
+                    component = self.db_manager.get_component_by_id(component_id)
+                    if component:
+                        component_code = component[1]
+                        component_desc = component[2]
+                        
+                        # Get category from database first, fallback to dynamic categorization
+                        category = self.db_manager.get_component_category(component_id, component_code, component_desc)
+                        
+                        # Only include if category is selected (all categories in this case)
+                        if category in selected_categories:
+                            item = {
+                                'quantity': abs(quantity),  # Use absolute value for display
+                                'price': unit_price,
+                                'total': abs(total_cost),   # Use absolute value for display
+                                'value': component_code,
+                                'description': component_desc
+                            }
+                            
+                            component_groups[category]['items'].append(item)
+                            component_groups[category]['total'] += abs(total_cost)
+                
+                # Write the student's export data using the same format
+                self.write_student_data_to_csv(writer, student_name, student_number, student_phone, 
+                                              initial_balance, used_amount, final_balance, component_groups)
+                
+                # Add 4 empty lines between student reports (except after the last student)
+                if i < len(students) - 1:
+                    for _ in range(4):
+                        writer.writerow([])
+    
+    def write_student_data_to_csv(self, writer, student_name, student_number, student_phone, 
+                                  initial_balance, used_amount, final_balance, component_groups):
+        """Write a single student's data to the CSV writer using tab format"""
+        # Header information
+        writer.writerow(['Student Name', student_name])
+        writer.writerow(['Student Number', student_number])
+        writer.writerow(['Contact', student_phone])
+        writer.writerow(['Paid', int(initial_balance) if initial_balance == int(initial_balance) else initial_balance])
+        writer.writerow(['Used', abs(used_amount)])
+        writer.writerow(['Balance', final_balance])
+        writer.writerow([])  # Empty row
+        
+        # Component category headers (4 columns each)
+        writer.writerow([
+            'RESISTOR', '', '', '', 'CAPACITOR', '', '', '', 'DIODE', '', '', '', 
+            'IC', '', '', '', 'TRANSISTORS', '', '', '', 'OTHER COMPONENTS', '', '', ''
+        ])
+        
+        # Subheaders
+        writer.writerow([
+            'Value', 'Quantity', 'Price', 'Total', 'Value', 'Quantity', 'Price', 'Total', 
+            'Value', 'Quantity', 'Price', 'Total', 'Value', 'Quantity', 'Price', 'Total',
+            'Value', 'Quantity', 'Price', 'Total', 'Value', 'Quantity', 'Price', 'Total'
+        ])
+        
+        # Find maximum number of items in any category
+        max_items = max(len(group['items']) for group in component_groups.values()) if any(component_groups.values()) else 0
+        max_items = max(max_items, 10)  # Ensure at least 10 rows
+        
+        # Write component data rows
+        for i in range(max_items):
+            row = []
+            
+            # RESISTOR (Value, Quantity, Price, Total)
+            if i < len(component_groups['RESISTOR']['items']):
+                item = component_groups['RESISTOR']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            # CAPACITOR (Value, Quantity, Price, Total)
+            if i < len(component_groups['CAPACITOR']['items']):
+                item = component_groups['CAPACITOR']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            # DIODE (Value, Quantity, Price, Total)
+            if i < len(component_groups['DIODE']['items']):
+                item = component_groups['DIODE']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            # IC (Value, Quantity, Price, Total)
+            if i < len(component_groups['IC']['items']):
+                item = component_groups['IC']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            # TRANSISTORS (Value, Quantity, Price, Total)
+            if i < len(component_groups['TRANSISTORS']['items']):
+                item = component_groups['TRANSISTORS']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            # OTHER COMPONENTS (Value, Quantity, Price, Total)
+            if i < len(component_groups['OTHER COMPONENTS']['items']):
+                item = component_groups['OTHER COMPONENTS']['items'][i]
+                row.extend([item['value'], item['quantity'], item['price'], item['total']])
+            else:
+                row.extend(['', '', '', '0'])
+            
+            writer.writerow(row)
+        
+        # Write totals row
+        totals_row = ['', '', '', f"{component_groups['RESISTOR']['total']}"]
+        totals_row.extend(['', '', '', f"{component_groups['CAPACITOR']['total']}"])
+        totals_row.extend(['', '', '', f"{component_groups['DIODE']['total']}"])
+        totals_row.extend(['', '', '', f"{component_groups['IC']['total']}"])
+        totals_row.extend(['', '', '', f"{component_groups['TRANSISTORS']['total']}"])
+        totals_row.extend(['', '', '', f"{component_groups['OTHER COMPONENTS']['total']}"])
+        
+        writer.writerow(totals_row)
+
     def generate_export_data(self, student_id, preview_mode=False):
         """Generate export data for preview or actual export"""
         # Get student information
@@ -3970,6 +3816,16 @@ class SettingsWidget(QWidget):
         
         settings_layout.addRow("Info Popups:", self.show_info_popups_checkbox)
         
+        # Confirm category changes setting
+        self.confirm_category_changes_checkbox = QCheckBox()
+        self.confirm_category_changes_checkbox.setText("Confirm category changes")
+        self.confirm_category_changes_checkbox.setToolTip(
+            "Show confirmation dialog when changing component categories"
+        )
+        self.confirm_category_changes_checkbox.stateChanged.connect(self.save_settings)
+        
+        settings_layout.addRow("Category Changes:", self.confirm_category_changes_checkbox)
+        
         # Add some spacing
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
         
@@ -3990,6 +3846,10 @@ class SettingsWidget(QWidget):
             # Load info popups setting (default: False to reduce interruptions)
             show_info_popups = self.db_manager.get_setting('show_info_popups', 'false')
             self.show_info_popups_checkbox.setChecked(show_info_popups.lower() == 'true')
+            
+            # Load confirm category changes setting
+            confirm_category_changes = self.db_manager.get_setting('confirm_category_changes', 'true')
+            self.confirm_category_changes_checkbox.setChecked(confirm_category_changes.lower() == 'true')
         except Exception as e:
             print(f"Error loading settings: {e}")
             # Set defaults
@@ -4011,12 +3871,309 @@ class SettingsWidget(QWidget):
             # Save info popups setting
             show_info_popups = 'true' if self.show_info_popups_checkbox.isChecked() else 'false'
             self.db_manager.set_setting('show_info_popups', show_info_popups)
+            
+            # Save confirm category changes setting
+            confirm_category_changes = 'true' if self.confirm_category_changes_checkbox.isChecked() else 'false'
+            self.db_manager.set_setting('confirm_category_changes', confirm_category_changes)
         except Exception as e:
             print(f"Error saving settings: {e}")
     
     def should_confirm_purchases(self):
         """Helper method to check if purchase confirmations are enabled"""
         return self.confirm_purchases_checkbox.isChecked()
+
+
+class CategorySettingsWidget(QWidget):
+    """Widget for managing component categories with component list and radio buttons"""
+    
+    def __init__(self, db_manager):
+        super().__init__()
+        self.db_manager = db_manager
+        self.selected_component_id = None
+        self.init_ui()
+        self.refresh_data()
+    
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title_label = QLabel("Category Settings - Set Categories for Components")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px 0px;")
+        layout.addWidget(title_label)
+        
+        # Main content area with horizontal layout
+        main_widget = QWidget()
+        main_layout = QHBoxLayout(main_widget)
+        
+        # Left side - Components table
+        left_widget = QGroupBox("Components")
+        left_layout = QVBoxLayout(left_widget)
+        
+        # Search filter for components
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Search:")
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search by identifier or description...")
+        self.search_edit.textChanged.connect(self.filter_components)
+        
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_edit)
+        left_layout.addLayout(search_layout)
+        
+        # Components table widget
+        self.components_table = QTableWidget()
+        self.components_table.setColumnCount(4)
+        self.components_table.setHorizontalHeaderLabels(['ID', 'Identifier', 'Description', 'Current Category'])
+        self.components_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.components_table.itemClicked.connect(self.on_component_selected)
+        
+        # Set column widths
+        header = self.components_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # ID
+        header.setSectionResizeMode(1, QHeaderView.Interactive)       # Identifier
+        header.setSectionResizeMode(2, QHeaderView.Stretch)           # Description
+        header.setSectionResizeMode(3, QHeaderView.Interactive)       # Current Category
+        
+        # Enable sorting
+        self.components_table.setSortingEnabled(True)
+        
+        left_layout.addWidget(self.components_table)
+        
+        main_layout.addWidget(left_widget)
+        
+        # Right side - Category selection with radio buttons
+        right_widget = QGroupBox("Set Category")
+        right_layout = QVBoxLayout(right_widget)
+        
+        # Instructions
+        instructions_label = QLabel("Select a component from the table on the left, then choose its category:")
+        instructions_label.setStyleSheet("font-style: italic; margin-bottom: 10px;")
+        instructions_label.setWordWrap(True)
+        right_layout.addWidget(instructions_label)
+        
+        # Category radio buttons
+        self.category_group = QButtonGroup()
+        self.category_radios = {}
+        
+        # Create radio buttons for each standard category
+        categories_label = QLabel("Available Categories:")
+        categories_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        right_layout.addWidget(categories_label)
+        
+        for category in self.db_manager.STANDARD_CATEGORIES:
+            radio = QRadioButton(category)
+            radio.toggled.connect(self.on_category_selected)
+            self.category_group.addButton(radio)
+            self.category_radios[category] = radio
+            right_layout.addWidget(radio)
+        
+        # Apply button
+        self.apply_button = QPushButton("Apply Category to Selected Component")
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self.apply_category)
+        self.apply_button.setStyleSheet("margin-top: 20px; padding: 10px; font-weight: bold;")
+        right_layout.addWidget(self.apply_button)
+        
+        # Current selection info
+        self.selection_info_label = QLabel("No component selected")
+        self.selection_info_label.setStyleSheet("margin-top: 10px; padding: 8px; background-color: #e8f4fd; border: 1px solid #bee5eb; border-radius: 4px;")
+        right_layout.addWidget(self.selection_info_label)
+        
+        # Add stretch to push everything to the top
+        right_layout.addStretch()
+        
+        main_layout.addWidget(right_widget)
+        
+        # Set proportions: components table takes more space
+        main_layout.setStretch(0, 2)  # Left side (components table)
+        main_layout.setStretch(1, 1)  # Right side (category selection)
+        
+        layout.addWidget(main_widget)
+    
+    def refresh_data(self):
+        """Refresh all data in the widget"""
+        self.refresh_components()
+        self.selected_component_id = None
+        self.update_selection_info()
+        
+    def refresh_components(self):
+        """Refresh the components table"""
+        # Temporarily disable sorting to prevent visual issues
+        self.components_table.setSortingEnabled(False)
+        
+        # Get all components
+        components = self.db_manager.get_components()
+        
+        self.components_table.setRowCount(len(components))
+        
+        for row, component in enumerate(components):
+            component_id, identifier, description, price, created_at, updated_at, quantity, category = component
+            
+            # ID column
+            id_item = QTableWidgetItem()
+            id_item.setData(Qt.DisplayRole, component_id)
+            id_item.setFlags(id_item.flags() & ~Qt.ItemIsEditable)
+            self.components_table.setItem(row, 0, id_item)
+            
+            # Identifier column
+            identifier_item = QTableWidgetItem(identifier or '')
+            identifier_item.setFlags(identifier_item.flags() & ~Qt.ItemIsEditable)
+            self.components_table.setItem(row, 1, identifier_item)
+            
+            # Description column
+            description_item = QTableWidgetItem(description or '')
+            description_item.setFlags(description_item.flags() & ~Qt.ItemIsEditable)
+            self.components_table.setItem(row, 2, description_item)
+            
+            # Current category column
+            current_category = category or 'Not Set'
+            current_category_item = QTableWidgetItem(current_category)
+            current_category_item.setFlags(current_category_item.flags() & ~Qt.ItemIsEditable)
+            self.components_table.setItem(row, 3, current_category_item)
+        
+        # Re-enable sorting
+        self.components_table.setSortingEnabled(True)
+    
+    def filter_components(self):
+        """Filter components based on search text"""
+        search_text = self.search_edit.text().lower()
+        
+        for row in range(self.components_table.rowCount()):
+            # Get row data
+            identifier = self.components_table.item(row, 1).text().lower()
+            description = self.components_table.item(row, 2).text().lower()
+            
+            # Show/hide row based on search
+            if search_text == '' or search_text in identifier or search_text in description:
+                self.components_table.setRowHidden(row, False)
+            else:
+                self.components_table.setRowHidden(row, True)
+    
+    def on_component_selected(self, item):
+        """Handle component selection from the table"""
+        row = item.row()
+        self.selected_component_id = self.components_table.item(row, 0).data(Qt.DisplayRole)
+        
+        # Get component details
+        component_data = self.db_manager.get_component_by_id(self.selected_component_id)
+        if component_data:
+            component_id, identifier, description, price, created_at, updated_at, quantity, category = component_data
+            
+            # Update radio button selection to match current category
+            for cat, radio in self.category_radios.items():
+                radio.setChecked(cat == category)
+            
+            # Update selection info
+            self.update_selection_info()
+        
+        self.apply_button.setEnabled(True)
+    
+    def on_category_selected(self):
+        """Handle category radio button selection"""
+        self.update_selection_info()
+    
+    def update_selection_info(self):
+        """Update the selection information display"""
+        if not self.selected_component_id:
+            self.selection_info_label.setText("No component selected")
+            return
+        
+        # Get selected category from radio buttons
+        selected_category = None
+        for category, radio in self.category_radios.items():
+            if radio.isChecked():
+                selected_category = category
+                break
+        
+        # Get component info
+        component_data = self.db_manager.get_component_by_id(self.selected_component_id)
+        if component_data:
+            component_id, identifier, description, price, created_at, updated_at, quantity, current_category = component_data
+            
+            info_text = f"<b>Selected:</b> {identifier}<br>"
+            info_text += f"<b>Current Category:</b> {current_category or 'Not set'}<br>"
+            if selected_category:
+                if selected_category == current_category:
+                    info_text += f"<b>New Category:</b> {selected_category} (no change)"
+                else:
+                    info_text += f"<b>New Category:</b> {selected_category} <span style='color: orange;'>(will change)</span>"
+            else:
+                info_text += "<b>New Category:</b> No category selected"
+            
+            self.selection_info_label.setText(info_text)
+    
+    def apply_category(self):
+        """Apply the selected category to the selected component"""
+        if not self.selected_component_id:
+            QMessageBox.warning(self, "Warning", "Please select a component first!")
+            return
+        
+        # Get selected category
+        selected_category = None
+        for category, radio in self.category_radios.items():
+            if radio.isChecked():
+                selected_category = category
+                break
+        
+        if not selected_category:
+            QMessageBox.warning(self, "Warning", "Please select a category!")
+            return
+        
+        # Get current component data
+        component_data = self.db_manager.get_component_by_id(self.selected_component_id)
+        if not component_data:
+            QMessageBox.critical(self, "Error", "Component not found!")
+            return
+        
+        component_id, identifier, description, price, created_at, updated_at, quantity, current_category = component_data
+        
+        # Check if category is actually changing
+        if selected_category == current_category:
+            if self.db_manager.get_setting('show_info_popups', 'false') == 'true':
+                QMessageBox.information(self, "Info", f"Component '{identifier}' already has category '{selected_category}'")
+            return
+        
+        # Check if confirmation is enabled
+        should_confirm = self.db_manager.get_setting('confirm_category_changes', 'true').lower() == 'true'
+        
+        if should_confirm:
+            # Confirm the change
+            reply = QMessageBox.question(
+                self,
+                "Confirm Category Change",
+                f"Change category for '{identifier}' from '{current_category or 'None'}' to '{selected_category}'?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                return
+        
+        try:
+            # Update the component
+            self.db_manager.update_component(
+                component_id, identifier, description, price, quantity, selected_category
+            )
+            
+            # Refresh the components table to show the change
+            self.refresh_components()
+            
+            # Reselect the same component in the table to update the display
+            for row in range(self.components_table.rowCount()):
+                if self.components_table.item(row, 0).data(Qt.DisplayRole) == component_id:
+                    self.components_table.selectRow(row)
+                    self.on_component_selected(self.components_table.item(row, 0))
+                    break
+            
+            if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Category for '{identifier}' changed to '{selected_category}'"
+                )
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update component: {str(e)}")
 
 
 class ComponentManagerApp(QMainWindow):
@@ -4044,29 +4201,21 @@ class ComponentManagerApp(QMainWindow):
         
         # Add tabs
         self.component_widget = ComponentWidget(self.db_manager)
-        self.category_widget = CategoryWidget(self.db_manager)
-        self.linking_widget = LinkingWidget(self.db_manager)
         self.student_widget = StudentWidget(self.db_manager)
-        self.student_costs_widget = StudentCostsWidget(self.db_manager)
         self.student_receipts_widget = StudentReceiptsWidget(self.db_manager)
         self.export_reports_widget = ExportReportsWidget(self.db_manager)
+        self.category_settings_widget = CategorySettingsWidget(self.db_manager)
         self.settings_widget = SettingsWidget(self.db_manager)
         
         self.tab_widget.addTab(self.component_widget, "Components")
-        self.tab_widget.addTab(self.category_widget, "Categories")
-        self.tab_widget.addTab(self.linking_widget, "Component Categories")
         self.tab_widget.addTab(self.student_widget, "Students")
-        self.tab_widget.addTab(self.student_costs_widget, "Student Costs")
-        self.tab_widget.addTab(self.student_receipts_widget, "Student Receipts")
+        self.tab_widget.addTab(self.student_receipts_widget, "Student Transactions")
         self.tab_widget.addTab(self.export_reports_widget, "Export Reports")
+        self.tab_widget.addTab(self.category_settings_widget, "Category Modify")
         self.tab_widget.addTab(self.settings_widget, "Settings")
         
         # Connect signals to refresh data when switching tabs
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
-        
-        # Connect signals to refresh category list in component widget
-        self.category_widget.categoryAdded.connect(self.component_widget.refresh_categories_list)
-        self.category_widget.categoryUpdated.connect(self.component_widget.refresh_categories_list)
         
         layout.addWidget(self.tab_widget)
         
@@ -4155,12 +4304,6 @@ class ComponentManagerApp(QMainWindow):
         import_action.triggered.connect(self.import_csv)
         file_menu.addAction(import_action)
         
-        # Export data action
-        export_action = QAction('Export Student Costs', self)
-        export_action.setShortcut('Ctrl+E')
-        export_action.triggered.connect(self.export_student_costs)
-        file_menu.addAction(export_action)
-        
         file_menu.addSeparator()
         
         # Exit action
@@ -4200,62 +4343,22 @@ class ComponentManagerApp(QMainWindow):
         self.tab_widget.setCurrentWidget(self.component_widget)
         self.component_widget.import_csv()
     
-    def export_student_costs(self):
-        """Export student costs data to CSV"""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export Student Costs", 
-            "student_costs.csv", 
-            "CSV files (*.csv)"
-        )
-        
-        if file_path:
-            try:
-                # Get all transactions
-                transactions = self.db_manager.get_all_transactions()
-                
-                with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-                    writer = csv.writer(csvfile)
-                    
-                    # Write header
-                    writer.writerow([
-                        'Date', 'Student Name', 'Student Number', 'Component', 
-                        'Description', 'Quantity', 'Unit Price', 'Total Cost', 'Notes'
-                    ])
-                    
-                    # Write data
-                    for transaction in transactions:
-                        writer.writerow([
-                            transaction[6][:10],  # Date (just date part)
-                            transaction[9],       # Student name
-                            transaction[10],      # Student number
-                            transaction[11],      # Component identifier
-                            transaction[13] or '',# Component description
-                            f"{transaction[3]:.1f}",  # Quantity
-                            f"${transaction[4]:.2f}", # Unit price
-                            f"${transaction[5]:.2f}", # Total cost
-                            transaction[8] or ''  # Notes
-                        ])
-                
-                QMessageBox.information(self, "Success", f"Student costs exported to {file_path}")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
-    
     def refresh_all_data(self):
         """Refresh data in all tabs"""
         widgets = [
             self.component_widget,
-            self.category_widget, 
-            self.linking_widget,
             self.student_widget,
-            self.student_costs_widget,
-            self.student_receipts_widget
+            self.student_receipts_widget,
+            self.export_reports_widget,
+            self.category_settings_widget,
+            self.settings_widget
         ]
         
         for widget in widgets:
             if hasattr(widget, 'refresh_data'):
                 widget.refresh_data()
+            elif hasattr(widget, 'refresh_components'):
+                widget.refresh_components()
         
         self.statusBar().showMessage("All data refreshed", 2000)
     
@@ -4273,7 +4376,8 @@ class ComponentManagerApp(QMainWindow):
             "• Student tracking\n"
             "• Cost tracking and purchase orders\n"
             "• CSV import/export\n\n"
-            "Built with Python and PyQt5"
+            "Built with Python and PyQt5\n\n"
+            "© 2025 DJA-prog"
         )
 
 
