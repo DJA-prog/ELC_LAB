@@ -1029,7 +1029,7 @@ class ComponentWidget(QWidget):
         self.description_edit.clear()
         self.price_edit.setValue(0.0)
         self.quantity_edit.setValue(0)
-        self.category_list.clearSelection()
+        self.category_combo.setCurrentText('OTHER COMPONENTS')  # Reset to default category
         self.selected_component_id = None
         self.delete_button.setEnabled(False)
         
