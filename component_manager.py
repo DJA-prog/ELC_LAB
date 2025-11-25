@@ -436,64 +436,67 @@ class DatabaseManager:
                 
                 for row in csv_reader:
                     try:
-                        # Clean and extract data
-                        identifier = str(row.get('ITEM', '')).strip()
-                        price_str = str(row.get('PRICE', '0')).strip()
-                        description = str(row.get('DESCRIPTION', '')).strip()
-                        
+                        # Clean and extract data using correct column names
+                        identifier = str(row.get('identifier', '')).strip()
+                        description = str(row.get('description', '')).strip()
+                        price_str = str(row.get('price', '0')).strip()
+                        quantity_str = str(row.get('quantity', '0')).strip()
+                        category = str(row.get('category', 'OTHER COMPONENTS')).strip()
+
                         # Skip empty rows
                         if not identifier:
                             continue
-                        
-                        # Handle price conversion
+
+                        # Handle price and quantity conversion
                         try:
                             price = float(price_str) if price_str else 0.0
                         except ValueError:
                             price = 0.0
-                        
+                        try:
+                            quantity = int(quantity_str) if quantity_str else 0
+                        except ValueError:
+                            quantity = 0
+
                         # Check if component exists
                         existing_component = self.get_component_by_identifier(identifier)
-                        
+
                         if existing_component:
                             # Apply duplicate criteria only when component exists:
                             # 1. Higher price wins
                             # 2. If prices equal, prefer one with description
                             existing_price = existing_component[3]  # price column
                             existing_desc = existing_component[2] or ''  # description column
-                            
+                            existing_quantity = existing_component[4] if len(existing_component) > 4 else 0
+                            existing_category = existing_component[5] if len(existing_component) > 5 else 'OTHER COMPONENTS'
+
                             should_update = False
-                            
+
                             if price > existing_price:
-                                # Higher price always wins
                                 should_update = True
                             elif price == existing_price:
-                                # If prices equal, prefer one with description
                                 if description and not existing_desc:
-                                    # New has description, existing doesn't - update
                                     should_update = True
                                 elif not description and existing_desc:
-                                    # New has no description, existing has - keep existing
                                     should_update = False
                                 elif description and existing_desc:
-                                    # Both have descriptions - keep existing (no change)
                                     should_update = False
                                 else:
-                                    # Neither has description - keep existing (no change)
                                     should_update = False
                             else:
-                                # Lower price - keep existing
                                 should_update = False
-                            
+
                             if should_update:
-                                self.update_component(existing_component[0], identifier, description, price)
+                                self.update_component(
+                                    existing_component[0], identifier, description, price, quantity, category
+                                )
                                 updated_count += 1
                             else:
                                 skipped_count += 1
                         else:
                             # New component - add it regardless of whether it has description
-                            self.insert_component(identifier, description, price)
+                            self.insert_component(identifier, description, price, quantity, category)
                             imported_count += 1
-                            
+
                     except Exception as e:
                         print(f"Error processing row {row}: {e}")
                         error_count += 1
@@ -934,16 +937,16 @@ class ComponentWidget(QWidget):
             id_item = QTableWidgetItem()
             id_item.setData(Qt.DisplayRole, component[0])  # Set as integer for proper sorting
             self.components_table.setItem(row, 0, id_item)
-            
+
             self.components_table.setItem(row, 1, QTableWidgetItem(component[1]))      # Identifier
             self.components_table.setItem(row, 2, QTableWidgetItem(component[2] or '')) # Description
-            
+
             # Create price item with numeric sorting
             price_item = QTableWidgetItem()
             price_item.setData(Qt.DisplayRole, component[3])  # Set as float for proper sorting
             price_item.setText(f"{component[3]:.2f}")  # Display formatted text
             self.components_table.setItem(row, 3, price_item)
-            
+
             # Create quantity item with numeric sorting and color coding
             quantity_item = QTableWidgetItem()
             try:
@@ -952,7 +955,7 @@ class ComponentWidget(QWidget):
                 quantity = 0
             quantity_item.setData(Qt.DisplayRole, quantity)
             quantity_item.setText(str(quantity))
-            
+
             # Color code negative quantities (oversold items)
             if quantity < 0:
                 quantity_item.setForeground(QColor(255, 0, 0))  # Red for negative
@@ -960,8 +963,12 @@ class ComponentWidget(QWidget):
                 quantity_item.setForeground(QColor(255, 165, 0))  # Orange for zero stock
             else:
                 quantity_item.setForeground(QColor(0, 128, 0))  # Green for positive stock
-            
+
             self.components_table.setItem(row, 4, quantity_item)
+
+            # Category column
+            category = component[7] if len(component) > 5 else 'OTHER COMPONENTS'
+            self.components_table.setItem(row, 5, QTableWidgetItem(category))
         
         # Re-enable sorting and sort by ID column numerically
         self.components_table.setSortingEnabled(True)
@@ -1607,16 +1614,17 @@ class AddComponentDialog(QDialog):
         self.quantity_spin.setValue(0)
         
         # Category selection
-        self.category_list = QListWidget()
-        self.category_list.setSelectionMode(QListWidget.MultiSelection)
-        self.category_list.setMaximumHeight(100)
-        self.load_categories()
+        # Category selection - single selection dropdown
+        self.category_combo = QComboBox()
+        for category in self.db_manager.STANDARD_CATEGORIES:
+            self.category_combo.addItem(category)
+        self.category_combo.setCurrentText('OTHER COMPONENTS')  # Default selection
         
         form_layout.addRow("Component Code:", self.identifier_edit)
         form_layout.addRow("Description:", self.description_edit)
         form_layout.addRow("Price:", self.price_spin)
         form_layout.addRow("Stock Quantity:", self.quantity_spin)
-        form_layout.addRow("Categories:", self.category_list)
+        form_layout.addRow("Category:", self.category_combo)
         
         layout.addWidget(form_widget)
         
@@ -2240,30 +2248,22 @@ class StudentReceiptsWidget(QWidget):
             
             # Write component data rows
             for i in range(max_items):
-                row = []
-                
-                # RESISTOR (columns 0-2)
-                if i < len(component_groups['RESISTOR']['items']):
-                    item = component_groups['RESISTOR']['items'][i]
-                    row.extend([item['quantity'], item['price'], item['total']])
-                else:
-                    row.extend(['', '', '0'])
-                
-                # RESISTOR value (column 3)
-                if i < len(component_groups['RESISTOR']['items']):
-                    row.append(component_groups['RESISTOR']['items'][i]['value'])
-                else:
-                    row.append('')
-                
-                # CAPACITOR (columns 4-6)
-                if i < len(component_groups['CAPACITOR']['items']):
-                    item = component_groups['CAPACITOR']['items'][i]
-                    row.extend([item['quantity'], item['price'], item['total']])
-                else:
-                    row.extend(['', '', '0'])
-                
-                # CAPACITOR value (column 7)
-                if i < len(component_groups['CAPACITOR']['items']):
+                try:
+                    # Add the component to the database with selected category
+                    category = self.category_combo.currentText()
+                    component_id = self.db_manager.insert_component(identifier, description, price, quantity, category)
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        f"Component '{identifier}' added successfully!\nCategory: {category}"
+                    )
+                    self.accept()
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        "Error",
+                        f"Failed to add component: {str(e)}"
+                    )
                     row.append(component_groups['CAPACITOR']['items'][i]['value'])
                 else:
                     row.append('')
