@@ -938,8 +938,8 @@ class ComponentWidget(QWidget):
             id_item.setData(Qt.DisplayRole, component[0])  # Set as integer for proper sorting
             self.components_table.setItem(row, 0, id_item)
 
-            self.components_table.setItem(row, 1, QTableWidgetItem(component[1]))      # Identifier
-            self.components_table.setItem(row, 2, QTableWidgetItem(component[2] or '')) # Description
+            self.components_table.setItem(row, 1, QTableWidgetItem(str(component[1]) if component[1] is not None else ''))      # Identifier
+            self.components_table.setItem(row, 2, QTableWidgetItem(str(component[2]) if component[2] is not None else '')) # Description
 
             # Create price item with numeric sorting
             price_item = QTableWidgetItem()
@@ -967,7 +967,7 @@ class ComponentWidget(QWidget):
             self.components_table.setItem(row, 4, quantity_item)
 
             # Category column
-            category = component[7] if len(component) > 5 else 'OTHER COMPONENTS'
+            category = component[5] if len(component) > 5 else 'OTHER COMPONENTS'
             self.components_table.setItem(row, 5, QTableWidgetItem(category))
         
         # Re-enable sorting and sort by ID column numerically
@@ -1553,7 +1553,7 @@ class StudentWidget(QWidget):
             self.students_table.setItem(row, 1, QTableWidgetItem(student[1]))
             self.students_table.setItem(row, 2, QTableWidgetItem(student[2] or ''))
             self.students_table.setItem(row, 3, QTableWidgetItem(student[3] or ''))
-            self.students_table.setItem(row, 4, QTableWidgetItem(student[5] or ''))
+            self.students_table.setItem(row, 4, QTableWidgetItem(str(student[5]) if student[5] is not None else ''))
             
             # Final Balance (calculated from initial_balance + transactions)
             final_balance = self.db_manager.get_student_final_balance(student[0])
@@ -1996,8 +1996,8 @@ class StudentReceiptsWidget(QWidget):
             self.components_table.setItem(row, 0, id_item)
             
             # Component details
-            self.components_table.setItem(row, 1, QTableWidgetItem(component[1]))        # identifier
-            self.components_table.setItem(row, 2, QTableWidgetItem(component[2] or ''))  # description
+            self.components_table.setItem(row, 1, QTableWidgetItem(str(component[1]) if component[1] is not None else ''))        # identifier
+            self.components_table.setItem(row, 2, QTableWidgetItem(str(component[2]) if component[2] is not None else ''))  # description
             
             # Price
             price_item = QTableWidgetItem()
@@ -2602,8 +2602,8 @@ class CategoryWidget(QWidget):
             id_item.setData(Qt.DisplayRole, category[0])  # Set as integer for proper sorting
             self.categories_table.setItem(row, 0, id_item)
             
-            self.categories_table.setItem(row, 1, QTableWidgetItem(category[1]))      # Name
-            self.categories_table.setItem(row, 2, QTableWidgetItem(category[2] or '')) # Description
+            self.categories_table.setItem(row, 1, QTableWidgetItem(str(category[1]) if category[1] is not None else ''))      # Name
+            self.categories_table.setItem(row, 2, QTableWidgetItem(str(category[2]) if category[2] is not None else '')) # Description
         
         # Re-enable sorting and sort by ID column numerically
         self.categories_table.setSortingEnabled(True)
@@ -2761,11 +2761,11 @@ class LinkingWidget(QWidget):
             self.components_table.setItem(row, 0, id_item)
             
             # Identifier and description
-            self.components_table.setItem(row, 1, QTableWidgetItem(component[1]))
-            self.components_table.setItem(row, 2, QTableWidgetItem(component[2] or ''))
+            self.components_table.setItem(row, 1, QTableWidgetItem(str(component[1]) if component[1] is not None else ''))
+            self.components_table.setItem(row, 2, QTableWidgetItem(str(component[2]) if component[2] is not None else ''))
             
             # Categories (joined as comma-separated string)
-            categories_str = component[4] if component[4] else "OTHER COMPONENTS"
+            categories_str = str(component[4]) if component[4] is not None else "OTHER COMPONENTS"
             self.components_table.setItem(row, 3, QTableWidgetItem(categories_str))
         
         # Sort by ID ascending
@@ -4008,7 +4008,7 @@ class CategorySettingsWidget(QWidget):
         self.components_table.setRowCount(len(components))
         
         for row, component in enumerate(components):
-            component_id, identifier, description, price, created_at, updated_at, quantity, category = component
+            component_id, identifier, description, price, quantity, category, created_at, updated_at= component
             
             # ID column
             id_item = QTableWidgetItem()
@@ -4017,17 +4017,17 @@ class CategorySettingsWidget(QWidget):
             self.components_table.setItem(row, 0, id_item)
             
             # Identifier column
-            identifier_item = QTableWidgetItem(identifier or '')
+            identifier_item = QTableWidgetItem(str(identifier) if identifier is not None else '')
             identifier_item.setFlags(identifier_item.flags() & ~Qt.ItemIsEditable)
             self.components_table.setItem(row, 1, identifier_item)
             
             # Description column
-            description_item = QTableWidgetItem(description or '')
+            description_item = QTableWidgetItem(str(description) if description is not None else '')
             description_item.setFlags(description_item.flags() & ~Qt.ItemIsEditable)
             self.components_table.setItem(row, 2, description_item)
             
             # Current category column
-            current_category = category or 'Not Set'
+            current_category = str(category) if category is not None else 'Not Set'
             current_category_item = QTableWidgetItem(current_category)
             current_category_item.setFlags(current_category_item.flags() & ~Qt.ItemIsEditable)
             self.components_table.setItem(row, 3, current_category_item)
