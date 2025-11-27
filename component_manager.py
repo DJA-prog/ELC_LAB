@@ -3858,6 +3858,18 @@ class SettingsWidget(QWidget):
         self.confirm_category_changes_checkbox.stateChanged.connect(self.save_settings)
         
         settings_layout.addRow("Category Changes:", self.confirm_category_changes_checkbox)
+
+        # Font Size setting
+        self.font_size_spinbox = QDoubleSpinBox()
+        self.font_size_spinbox.setRange(6.0, 48.0)
+        self.font_size_spinbox.setSingleStep(0.5)
+        self.font_size_spinbox.setValue(10.0)
+        self.font_size_spinbox.setToolTip(
+            "Set the application font size"
+        )
+        self.font_size_spinbox.valueChanged.connect(self.save_settings)
+
+        settings_layout.addRow("Font Size:", self.font_size_spinbox)
         
         # Add some spacing
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -3883,6 +3895,10 @@ class SettingsWidget(QWidget):
             # Load confirm category changes setting
             confirm_category_changes = self.db_manager.get_setting('confirm_category_changes', 'true')
             self.confirm_category_changes_checkbox.setChecked(confirm_category_changes.lower() == 'true')
+
+            # Load font size setting
+            font_size = self.db_manager.get_setting('font_size', '10.0')
+            self.font_size_spinbox.setValue(float(font_size))
         except Exception as e:
             print(f"Error loading settings: {e}")
             # Set defaults
@@ -3908,6 +3924,10 @@ class SettingsWidget(QWidget):
             # Save confirm category changes setting
             confirm_category_changes = 'true' if self.confirm_category_changes_checkbox.isChecked() else 'false'
             self.db_manager.set_setting('confirm_category_changes', confirm_category_changes)
+
+            # Save font size setting
+            font_size = str(self.font_size_spinbox.value())
+            self.db_manager.set_setting('font_size', font_size)
         except Exception as e:
             print(f"Error saving settings: {e}")
     
@@ -4257,6 +4277,12 @@ class ComponentManagerApp(QMainWindow):
         
         # Create status bar
         self.statusBar().showMessage("Ready")
+
+        # Apply saved font size setting
+        font_size = self.db_manager.get_setting('font_size', '10.0')
+        font = self.font()
+        font.setPointSizeF(float(font_size))
+        self.setFont(font)
         
         # Style the application
         self.setStyleSheet("""
