@@ -311,7 +311,7 @@ class DatabaseManager:
         """Update an existing component"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         if quantity is not None and category is not None:
             cursor.execute('''
                 UPDATE components 
@@ -616,23 +616,38 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        total_cost = quantity * unit_price
-        
+        # Check for existing transaction with same student_id, component_id, and unit_price
         cursor.execute('''
-            INSERT INTO student_transactions 
-            (student_id, component_id, quantity, unit_price, total_cost, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (student_id, component_id, quantity, unit_price, total_cost, notes))
-        
-        transaction_id = cursor.lastrowid
-        
+            SELECT id, quantity FROM student_transactions
+            WHERE student_id = ? AND component_id = ? AND unit_price = ?
+        ''', (student_id, component_id, unit_price))
+        existing = cursor.fetchone()
+
+        if existing:
+            transaction_id, existing_quantity = existing
+            new_quantity = existing_quantity + quantity
+            total_cost = new_quantity * unit_price
+            cursor.execute('''
+                UPDATE student_transactions
+                SET quantity = ?, total_cost = ?, notes = ?
+                WHERE id = ?
+            ''', (new_quantity, total_cost, notes, transaction_id))
+        else:
+            total_cost = quantity * unit_price
+            cursor.execute('''
+                INSERT INTO student_transactions 
+                (student_id, component_id, quantity, unit_price, total_cost, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (student_id, component_id, quantity, unit_price, total_cost, notes))
+            transaction_id = cursor.lastrowid
+
         # Update component stock (reduce by quantity purchased)
         cursor.execute('''
             UPDATE components
             SET quantity = quantity - ?, updated_at = ?
             WHERE id = ?
         ''', (quantity, datetime.now().isoformat(), component_id))
-        
+
         conn.commit()
         conn.close()
         return transaction_id
@@ -1002,7 +1017,7 @@ class ComponentWidget(QWidget):
                 self.componentAdded.emit()
             
             self.clear_form()
-            self.refresh_components()
+            # self.refresh_components()
             
         except Exception as e:
             action = "update" if self.selected_component_id else "add"
