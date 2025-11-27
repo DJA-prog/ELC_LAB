@@ -1787,19 +1787,19 @@ class StudentReceiptsWidget(QWidget):
         search_label = QLabel("Search Components:")
         self.component_search = QLineEdit()
         self.component_search.setPlaceholderText("Search by identifier or description...")
-        self.component_search.textChanged.connect(self.filter_components)
+        self.component_search.textChanged.connect(self.transaction_filter_components)
         
         search_layout.addWidget(search_label)
         search_layout.addWidget(self.component_search)
         left_layout.addLayout(search_layout)
         
         # Components table
-        self.components_table = QTableWidget()
-        self.components_table.setColumnCount(5)  # Updated to include quantity column
-        self.components_table.setHorizontalHeaderLabels(['ID', 'Component Code', 'Description', 'Price', 'Stock'])
+        self.transaction_components_table = QTableWidget()
+        self.transaction_components_table.setColumnCount(5)  # Updated to include quantity column
+        self.transaction_components_table.setHorizontalHeaderLabels(['ID', 'Component Code', 'Description', 'Price', 'Stock'])
         
         # Set column widths
-        header = self.components_table.horizontalHeader()
+        header = self.transaction_components_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # ID
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Code
         header.setSectionResizeMode(2, QHeaderView.Stretch)           # Description
@@ -1807,12 +1807,12 @@ class StudentReceiptsWidget(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Stock
         
         # Enable sorting and selection
-        self.components_table.setSortingEnabled(True)
-        self.components_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.components_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.components_table.itemDoubleClicked.connect(self.add_single_purchase)
+        self.transaction_components_table.setSortingEnabled(True)
+        self.transaction_components_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.transaction_components_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.transaction_components_table.itemDoubleClicked.connect(self.add_single_purchase)
         
-        left_layout.addWidget(self.components_table)
+        left_layout.addWidget(self.transaction_components_table)
         
         # Add to receipt controls
         add_controls_layout = QHBoxLayout()
@@ -1840,7 +1840,7 @@ class StudentReceiptsWidget(QWidget):
         left_layout.addLayout(add_controls_layout)
         
         # Connect selection change
-        self.components_table.itemSelectionChanged.connect(self.on_component_selection_changed)
+        self.transaction_components_table.itemSelectionChanged.connect(self.on_component_selection_changed)
         
         splitter.addWidget(left_widget)
         
@@ -1931,7 +1931,7 @@ class StudentReceiptsWidget(QWidget):
         
         # Refresh components
         self.all_components = self.db_manager.get_components()
-        self.filter_components()
+        # self.transaction_filter_components()
         
         # Reset state
         self.current_student_id = None
@@ -1969,64 +1969,85 @@ class StudentReceiptsWidget(QWidget):
         # Enable/disable add button based on student selection
         self.update_button_states()
     
-    def filter_components(self):
+    def transaction_filter_components(self):
         """Filter components based on search text"""
+
         search_text = self.component_search.text().lower().strip()
         
+        if not search_text:
+            # Show all components if search is empty
+            self.display_components(self.all_components)
+            return
+
+        # print(f"[DEBUG] filter_components: search_text='{search_text}'")
+        
+        # Filter components based on search text
         filtered_components = []
         for component in self.all_components:
-            if not search_text:
+            # Search in identifier, description
+            identifier = component[1].lower()
+            description = (component[2] or '').lower()
+            price_str = f"{component[3]:.2f}"
+            
+            if (search_text in identifier or 
+                search_text in description or 
+                search_text in price_str):
                 filtered_components.append(component)
-            else:
-                identifier = component[1].lower()
-                description = (component[2] or '').lower()
-                if search_text in identifier or search_text in description:
-                    filtered_components.append(component)
+
+        # print(f"[DEBUG] filter_components: search_text='{search_text}', filtered_count={len(filtered_components)}")
         
         self.display_components(filtered_components)
+
+        # print(f"[DEBUG] filter_components: Displayed {len(filtered_components)} components after filtering.")
     
     def display_components(self, components):
-        """Display components in the table"""
-        self.components_table.setRowCount(len(components))
+        """Display the given list of components in the table"""
+        # Temporarily disable sorting to prevent visual issues during table update
+        self.transaction_components_table.setSortingEnabled(False)
+        
+        self.transaction_components_table.setRowCount(len(components))
         
         for row, component in enumerate(components):
-            # Component ID
+            # Create ID item with numeric sorting
             id_item = QTableWidgetItem()
-            id_item.setData(Qt.DisplayRole, component[0])
-            self.components_table.setItem(row, 0, id_item)
-            
-            # Component details
-            self.components_table.setItem(row, 1, QTableWidgetItem(str(component[1]) if component[1] is not None else ''))        # identifier
-            self.components_table.setItem(row, 2, QTableWidgetItem(str(component[2]) if component[2] is not None else ''))  # description
-            
-            # Price
+            id_item.setData(Qt.DisplayRole, component[0])  # Set as integer for proper sorting
+            self.transaction_components_table.setItem(row, 0, id_item)
+
+            self.transaction_components_table.setItem(row, 1, QTableWidgetItem(str(component[1]) if component[1] is not None else ''))      # Identifier
+            self.transaction_components_table.setItem(row, 2, QTableWidgetItem(str(component[2]) if component[2] is not None else '')) # Description
+
+            # Create price item with numeric sorting
             price_item = QTableWidgetItem()
-            price_item.setData(Qt.DisplayRole, component[3])
-            price_item.setText(f"${component[3]:.2f}")
-            self.components_table.setItem(row, 3, price_item)
-            
-            # Stock quantity with color coding
+            price_item.setData(Qt.DisplayRole, component[3])  # Set as float for proper sorting
+            price_item.setText(f"{component[3]:.2f}")  # Display formatted text
+            self.transaction_components_table.setItem(row, 3, price_item)
+
+            # Create quantity item with numeric sorting and color coding
+            quantity_item = QTableWidgetItem()
             try:
                 quantity = int(component[4]) if len(component) > 4 and component[4] is not None else 0
             except (ValueError, TypeError):
                 quantity = 0
-            
-            quantity_item = QTableWidgetItem()
             quantity_item.setData(Qt.DisplayRole, quantity)
             quantity_item.setText(str(quantity))
-            
-            # Color code based on stock level
+
+            # Color code negative quantities (oversold items)
             if quantity < 0:
-                quantity_item.setForeground(QColor('red'))
+                quantity_item.setForeground(QColor(255, 0, 0))  # Red for negative
             elif quantity == 0:
-                quantity_item.setForeground(QColor('orange'))
+                quantity_item.setForeground(QColor(255, 165, 0))  # Orange for zero stock
             else:
-                quantity_item.setForeground(QColor('green'))
-                
-            self.components_table.setItem(row, 4, quantity_item)
+                quantity_item.setForeground(QColor(0, 128, 0))  # Green for positive stock
+
+            self.transaction_components_table.setItem(row, 4, quantity_item)
+
+            # Category column
+            category = component[5] if len(component) > 5 else 'OTHER COMPONENTS'
+            self.transaction_components_table.setItem(row, 5, QTableWidgetItem(category))
         
-        # Sort by ID ascending
-        self.components_table.sortItems(0, Qt.AscendingOrder)
+        # Re-enable sorting and sort by ID column numerically
+        self.transaction_components_table.setSortingEnabled(True)
+        self.transaction_components_table.sortItems(0, Qt.AscendingOrder)
     
     def on_component_selection_changed(self):
         """Enable/disable add button based on selection"""
@@ -2034,7 +2055,7 @@ class StudentReceiptsWidget(QWidget):
     
     def update_button_states(self):
         """Update button states based on current selections"""
-        has_component_selection = self.components_table.currentRow() >= 0
+        has_component_selection = self.transaction_components_table.currentRow() >= 0
         has_student = self.current_student_id is not None
         self.add_component_btn.setEnabled(has_component_selection and has_student)
         
@@ -2043,51 +2064,60 @@ class StudentReceiptsWidget(QWidget):
     
     def add_single_purchase(self):
         """Add a single component purchase to the student's history"""
-        current_row = self.components_table.currentRow()
+        current_row = self.transaction_components_table.currentRow()
         if current_row < 0 or not self.current_student_id:
+            print(f"[DEBUG] No component selected or no student selected. current_row={current_row}, current_student_id={self.current_student_id}")
             return
         
         # Get component details
-        component_id = int(self.components_table.item(current_row, 0).text())
-        component_code = self.components_table.item(current_row, 1).text()
-        description = self.components_table.item(current_row, 2).text()
-        unit_price = float(self.components_table.item(current_row, 3).text().replace('$', ''))
+        component_id = int(self.transaction_components_table.item(current_row, 0).text())
+        component_code = self.transaction_components_table.item(current_row, 1).text()
+        description = self.transaction_components_table.item(current_row, 2).text()
+        unit_price = float(self.transaction_components_table.item(current_row, 3).text().replace('$', ''))
         quantity = self.quantity_spin.value()
-        
+        print(f"[DEBUG] Selected component_id={component_id}, component_code={component_code}, description={description}, unit_price={unit_price}, quantity={quantity}")
+
         # Check if confirmation is enabled
         confirm_purchases = self.db_manager.get_setting('confirm_purchases', 'true')
         should_confirm = confirm_purchases.lower() == 'true'
+        print(f"[DEBUG] confirm_purchases={confirm_purchases}, should_confirm={should_confirm}")
         
         if should_confirm:
             # Confirm the purchase
             total_cost = quantity * unit_price
+            print(f"[DEBUG] Showing confirmation dialog for purchase. total_cost={total_cost}")
             reply = QMessageBox.question(
-                self,
-                "Add Purchase",
-                f"Add purchase to student's history?\n\n"
-                f"Component: {component_code}\n"
-                f"Description: {description}\n"
-                f"Quantity: {quantity:.1f}\n"
-                f"Unit Price: ${unit_price:.2f}\n"
-                f"Total: ${total_cost:.2f}",
-                QMessageBox.Yes | QMessageBox.No
+            self,
+            "Add Purchase",
+            f"Add purchase to student's history?\n\n"
+            f"Component: {component_code}\n"
+            f"Description: {description}\n"
+            f"Quantity: {quantity:.1f}\n"
+            f"Unit Price: ${unit_price:.2f}\n"
+            f"Total: ${total_cost:.2f}",
+            QMessageBox.Yes | QMessageBox.No
             )
             
+            print(f"[DEBUG] Confirmation dialog reply={reply}")
             if reply != QMessageBox.Yes:
+                print("[DEBUG] Purchase cancelled by user.")
                 return
         
         try:
+            print(f"[DEBUG] Adding transaction to database: student_id={self.current_student_id}, component_id={component_id}, quantity={quantity}, unit_price={unit_price}")
             # Add transaction directly to database
             self.db_manager.add_transaction(
-                self.current_student_id,
-                component_id,
-                quantity,
-                unit_price,
-                f"Single purchase - {component_code}"
+            self.current_student_id,
+            component_id,
+            quantity,
+            unit_price,
+            f"Single purchase - {component_code}"
             )
             
             # Show success popup based on settings
-            if self.db_manager.get_setting('show_success_popups', 'false') == 'true':
+            show_success_popups = self.db_manager.get_setting('show_success_popups', 'false')
+            print(f"[DEBUG] show_success_popups={show_success_popups}")
+            if show_success_popups == 'true':
                 QMessageBox.information(
                     self,
                     "Success",
@@ -2096,17 +2126,20 @@ class StudentReceiptsWidget(QWidget):
                 )
             
             # Refresh the display
+            print("[DEBUG] Refreshing purchase history and balance display.")
             self.refresh_purchase_history()
             self.update_balance_display()
             
             # Reset quantity
+            print("[DEBUG] Resetting quantity spinbox to 1.0")
             self.quantity_spin.setValue(1.0)
             
         except Exception as e:
+            print(f"[DEBUG] Exception occurred while adding purchase: {e}")
             QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to add purchase: {str(e)}"
+            self,
+            "Error",
+            f"Failed to add purchase: {str(e)}"
             )
     
     def export_purchase_csv(self):
